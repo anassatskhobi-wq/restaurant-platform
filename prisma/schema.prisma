@@ -1,0 +1,158 @@
+// Real database schema, backed by Supabase Postgres.
+// Wired into the app via src/lib/db/venues.ts and the admin panel
+// under src/app/admin/**.
+//
+// Setup (see README.md "Админ-панель и база данных"):
+//   1. npm install
+//   2. Put your Supabase connection string in .env as DATABASE_URL
+//      (and NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY)
+//   3. npx prisma migrate dev --name init
+//   4. npx prisma db seed   (loads the venues.ts demo data into Postgres)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  venues    Venue[]
+  staff     StaffMember[]
+}
+
+model Venue {
+  id         String         @id @default(cuid())
+  tenantId   String
+  tenant     Tenant         @relation(fields: [tenantId], references: [id])
+  slug       String         @unique
+  nameKa     String
+  nameRu     String
+  nameEn     String
+  addressKa  String
+  addressRu  String
+  addressEn  String
+  brandColor String         @default("#c0392b")
+  categories MenuCategory[]
+  tables     Table[]
+  staff      StaffMember[]
+  ingredients Ingredient[]
+  // Ссылки на страницу этой точки на агрегаторах доставки — просто
+  // хранятся и открываются кнопкой в админке, автоматического обновления
+  // цен/наличия на этих платформах отсюда нет (нет доступа к их API).
+  urlWolt    String?
+  urlBolt    String?
+  urlGlovo   String?
+  urlFacebook  String?
+  urlInstagram String?
+  urlMaps      String?
+  // Свободный текст про бренд/точку (когда и где создан бренд, когда и
+  // где открылись, история и т.п.) — заполняется вручную оператором,
+  // ИИ-помощник читает это, чтобы отвечать на вопросы про историю заведения.
+  aboutText  String?
+}
+
+model MenuCategory {
+  id        String     @id @default(cuid())
+  venueId   String
+  venue     Venue      @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  slug      String
+  nameKa    String
+  nameRu    String
+  nameEn    String
+  sortOrder Int        @default(0)
+  items     MenuItem[]
+}
+
+model MenuItem {
+  id            String       @id @default(cuid())
+  categoryId    String
+  category      MenuCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  slug          String
+  nameKa        String
+  nameRu        String
+  nameEn        String
+  descriptionKa String       @default("")
+  descriptionRu String       @default("")
+  descriptionEn String       @default("")
+  // Базовая цена — одна и та же на сайте, в ресторане и на всех
+  // агрегаторах. Разница между площадками — это только скидка (%),
+  // заданная отдельно ниже; финальная цена на площадке считается как
+  // priceGel * (1 - discount/100).
+  priceGel      Decimal
+  // Скидка/наценка (%) на самом гостевом QR-меню (в ресторане) — когда
+  // задана, на гостевой странице показывается перечёркнутая базовая цена
+  // и рядом цена со скидкой, посчитанная так же: priceGel * (1 - %/100).
+  discountMenuPercent  Decimal?
+  discountWoltPercent  Decimal?
+  discountBoltPercent  Decimal?
+  discountGlovoPercent Decimal?
+  available     Boolean      @default(true)
+  photoUrl      String?
+  sortOrder     Int          @default(0)
+  recipeItems   RecipeItem[]
+}
+
+// Ингредиент точки (своя база у каждого Venue) — название, единица
+// измерения, цена за единицу и флаг "в наличии". Используется для
+// расчёта себестоимости блюд и для автоматического отключения блюд,
+// у которых закончился хотя бы один ингредиент из состава.
+model Ingredient {
+  id           String       @id @default(cuid())
+  venueId      String
+  venue        Venue        @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  name         String
+  // Название на конкретном языке — необязательные, чтобы не требовать
+  // миграцию данных: пока не заполнены, интерфейс показывает старое
+  // единое поле name как запасной вариант.
+  nameKa       String?
+  nameRu       String?
+  nameEn       String?
+  unit         String       // "г", "кг", "мл", "л", "шт" и т.п.
+  pricePerUnit Decimal
+  available    Boolean      @default(true)
+  sortOrder    Int          @default(0)
+  createdAt    DateTime     @default(now())
+  recipeItems  RecipeItem[]
+}
+
+// Строка состава блюда: сколько единиц ингредиента уходит на одну
+// порцию. Себестоимость блюда = сумма (quantity * ingredient.pricePerUnit)
+// по всем строкам его состава.
+model RecipeItem {
+  id           String     @id @default(cuid())
+  menuItemId   String
+  menuItem     MenuItem   @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  ingredientId String
+  ingredient   Ingredient @relation(fields: [ingredientId], references: [id], onDelete: Cascade)
+  quantity     Decimal
+  sortOrder    Int        @default(0)
+}
+
+model Table {
+  id      String @id @default(cuid())
+  venueId String
+  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  label   String // e.g. "Table 5", printed on the QR code
+}
+
+// Links a Supabase Auth user (by their auth.users id) to a tenant/venue
+// so the admin panel knows who's allowed in and what they can edit.
+// role "OWNER" can edit every venue under the tenant; "STAFF" is scoped
+// to a single venue (venueId set).
+model StaffMember {
+  id             String   @id @default(cuid())
+  supabaseUserId String   @unique
+  email          String
+  tenantId       String
+  tenant         Tenant   @relation(fields: [tenantId], references: [id])
+  venueId        String?
+  venue          Venue?   @relation(fields: [venueId], references: [id])
+  role           String   @default("OWNER") // "OWNER" | "STAFF"
+  createdAt      DateTime @default(now())
+}

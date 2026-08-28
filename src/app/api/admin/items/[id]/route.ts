@@ -1,0 +1,86 @@
+import { NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+
+async function loadItemWithVenue(id: string) {
+  return prisma.menuItem.findUnique({
+    where: { id },
+    include: { category: { include: { venue: true } } },
+  });
+}
+
+export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+  const staff = await getStaffContext();
+  if (!staff) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const item = await loadItemWithVenue(params.id);
+  if (!item) return NextResponse.json({ error: "not found" }, { status: 404 });
+  if (!canEditVenue(staff, item.category.venue)) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  const body = await request.json().catch(() => null);
+  if (!body) return NextResponse.json({ error: "invalid body" }, { status: 400 });
+
+  const updated = await prisma.menuItem.update({
+    where: { id: params.id },
+    data: {
+      nameKa: body.nameKa,
+      nameRu: body.nameRu,
+      nameEn: body.nameEn,
+      descriptionKa: body.descriptionKa,
+      descriptionRu: body.descriptionRu,
+      descriptionEn: body.descriptionEn,
+      priceGel: body.priceGel,
+      discountMenuPercent:
+        body.discountMenuPercent !== undefined
+          ? body.discountMenuPercent === null || body.discountMenuPercent === ""
+            ? null
+            : body.discountMenuPercent
+          : undefined,
+      discountWoltPercent:
+        body.discountWoltPercent !== undefined
+          ? body.discountWoltPercent === null || body.discountWoltPercent === ""
+            ? null
+            : body.discountWoltPercent
+          : undefined,
+      discountBoltPercent:
+        body.discountBoltPercent !== undefined
+          ? body.discountBoltPercent === null || body.discountBoltPercent === ""
+            ? null
+            : body.discountBoltPercent
+          : undefined,
+      discountGlovoPercent:
+        body.discountGlovoPercent !== undefined
+          ? body.discountGlovoPercent === null || body.discountGlovoPercent === ""
+            ? null
+            : body.discountGlovoPercent
+          : undefined,
+      available: body.available,
+      photoUrl: body.photoUrl,
+    },
+  });
+
+  return NextResponse.json({
+    ...updated,
+    priceGel: Number(updated.priceGel),
+    discountMenuPercent: updated.discountMenuPercent != null ? Number(updated.discountMenuPercent) : null,
+    discountWoltPercent: updated.discountWoltPercent != null ? Number(updated.discountWoltPercent) : null,
+    discountBoltPercent: updated.discountBoltPercent != null ? Number(updated.discountBoltPercent) : null,
+    discountGlovoPercent: updated.discountGlovoPercent != null ? Number(updated.discountGlovoPercent) : null,
+  });
+}
+
+export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
+  const staff = await getStaffContext();
+  if (!staff) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const item = await loadItemWithVenue(params.id);
+  if (!item) return NextResponse.json({ error: "not found" }, { status: 404 });
+  if (!canEditVenue(staff, item.category.venue)) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  await prisma.menuItem.delete({ where: { id: params.id } });
+  return NextResponse.json({ ok: true });
+}
