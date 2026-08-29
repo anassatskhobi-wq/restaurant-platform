@@ -2819,7 +2819,7 @@ export function VenueEditor({
                 </button>
 
                 {showPlatformPicker && (
-                  <div className="absolute left-0 top-full z-30 mt-1 w-52 rounded-xl border border-neutral-200 bg-white p-2 shadow-xl">
+                  <div className="absolute left-0 bottom-full z-30 mb-1 w-52 rounded-xl border border-neutral-200 bg-white p-2 shadow-xl">
                     <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-neutral-50">
                       <input
                         type="checkbox"
