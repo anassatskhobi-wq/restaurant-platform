@@ -117,7 +117,7 @@ export async function POST(request: Request) {
     nameSnapshot: string;
     priceGel: number;
     qty: number;
-    modifiersSnapshot: { groupName: string; optionName: string; priceGel: number }[] | null;
+    modifiersSnapshot: { groupName: string; optionName: string; priceGel: number }[] | typeof Prisma.JsonNull;
   }[] = [];
 
   for (const { slug, qty, optionIds } of grouped.values()) {
@@ -162,7 +162,7 @@ export async function POST(request: Request) {
       nameSnapshot: nameForLocale(mi, locale),
       priceGel: basePrice + modifiersTotal,
       qty,
-            modifiersSnapshot: modifiersSnapshot.length ? modifiersSnapshot : Prisma.JsonNull,
+      modifiersSnapshot: modifiersSnapshot.length ? modifiersSnapshot : Prisma.JsonNull,
     });
   }
 
