@@ -21,6 +21,10 @@ export default async function AdminVenuePage({
             orderBy: { sortOrder: "asc" },
             include: {
               recipeItems: { orderBy: { sortOrder: "asc" }, include: { ingredient: true } },
+              modifierGroups: {
+                orderBy: { sortOrder: "asc" },
+                include: { options: { orderBy: { sortOrder: "asc" } } },
+              },
             },
           },
         },
@@ -51,6 +55,7 @@ export default async function AdminVenuePage({
     urlFacebook: venue.urlFacebook ?? "",
     urlInstagram: venue.urlInstagram ?? "",
     urlMaps: venue.urlMaps ?? "",
+    urlGoogleReview: venue.urlGoogleReview ?? "",
     aboutText: venue.aboutText ?? "",
     categories: venue.categories.map((c) => ({
       id: c.id,
@@ -88,6 +93,21 @@ export default async function AdminVenuePage({
             pricePerUnit: Number(ri.ingredient.pricePerUnit),
             available: ri.ingredient.available,
           },
+        })),
+        modifierGroups: i.modifierGroups.map((g) => ({
+          id: g.id,
+          nameKa: g.nameKa,
+          nameRu: g.nameRu,
+          nameEn: g.nameEn,
+          selectionType: g.selectionType === "MULTIPLE" ? ("MULTIPLE" as const) : ("SINGLE" as const),
+          maxSelect: g.maxSelect,
+          options: g.options.map((o) => ({
+            id: o.id,
+            nameKa: o.nameKa,
+            nameRu: o.nameRu,
+            nameEn: o.nameEn,
+            priceGel: Number(o.priceGel),
+          })),
         })),
       })),
     })),

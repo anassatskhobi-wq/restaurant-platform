@@ -110,6 +110,18 @@ const UI: Record<DisplayLocale, Record<string, string>> = {
     saveDiscounts: "Сохранить скидки",
     discountMenuLabel: "QR-меню",
     discountMenuTitle: "Скидка в ресторане/QR-меню",
+    modifiersTitle: "Платные допы / модификаторы",
+    modifiersHelp: "Например: «Соус» (выбрать один) или «Допы» (выбрать до нескольких) — гость выбирает их перед добавлением блюда в корзину.",
+    addModifierGroup: "+ добавить группу",
+    noModifiers: "Допы не заданы.",
+    groupNamePlaceholder: "Название группы",
+    selectionTypeSingle: "Один вариант (радио)",
+    selectionTypeMultiple: "Несколько (чекбоксы)",
+    maxSelectLabel: "макс. выбор",
+    addModifierOption: "+ добавить опцию",
+    optionNamePlaceholder: "Название опции",
+    deleteGroup: "Удалить группу",
+    saveModifiers: "Сохранить допы",
     compositionTitle: "Состав / себестоимость",
     addIngredientToRecipe: "+ добавить ингредиент в состав",
     noComposition: "Состав не указан.",
@@ -253,6 +265,18 @@ const UI: Record<DisplayLocale, Record<string, string>> = {
     saveDiscounts: "ფასდაკლებების შენახვა",
     discountMenuLabel: "QR-მენიუ",
     discountMenuTitle: "ფასდაკლება რესტორანში/QR-მენიუზე",
+    modifiersTitle: "ფასიანი დანამატები / მოდიფიკატორები",
+    modifiersHelp: "მაგ: «სოუსი» (აირჩიეთ ერთი) ან «დანამატები» (აირჩიეთ რამდენიმე) — სტუმარი ირჩევს კალათაში დამატებამდე.",
+    addModifierGroup: "+ ჯგუფის დამატება",
+    noModifiers: "დანამატები არ არის მითითებული.",
+    groupNamePlaceholder: "ჯგუფის სახელი",
+    selectionTypeSingle: "ერთი ვარიანტი (რადიო)",
+    selectionTypeMultiple: "რამდენიმე (checkbox)",
+    maxSelectLabel: "მაქს. არჩევანი",
+    addModifierOption: "+ ოფციის დამატება",
+    optionNamePlaceholder: "ოფციის სახელი",
+    deleteGroup: "ჯგუფის წაშლა",
+    saveModifiers: "დანამატების შენახვა",
     compositionTitle: "შემადგენლობა / თვითღირებულება",
     addIngredientToRecipe: "+ ინგრედიენტის დამატება შემადგენლობაში",
     noComposition: "შემადგენლობა მითითებული არ არის.",
@@ -396,6 +420,18 @@ const UI: Record<DisplayLocale, Record<string, string>> = {
     saveDiscounts: "Save discounts",
     discountMenuLabel: "QR menu",
     discountMenuTitle: "Discount in the restaurant / QR menu",
+    modifiersTitle: "Paid add-ons / modifiers",
+    modifiersHelp: "E.g. \"Sauce\" (choose one) or \"Add-ons\" (choose up to several) — the guest picks these before adding the item to the cart.",
+    addModifierGroup: "+ add group",
+    noModifiers: "No modifiers set.",
+    groupNamePlaceholder: "Group name",
+    selectionTypeSingle: "One option (radio)",
+    selectionTypeMultiple: "Several (checkboxes)",
+    maxSelectLabel: "max select",
+    addModifierOption: "+ add option",
+    optionNamePlaceholder: "Option name",
+    deleteGroup: "Delete group",
+    saveModifiers: "Save modifiers",
     compositionTitle: "Recipe / cost",
     addIngredientToRecipe: "+ add ingredient to recipe",
     noComposition: "Recipe not specified.",
@@ -486,6 +522,24 @@ type RecipeLine = {
   ingredient: Ingredient;
 };
 
+type ModifierOptionDraft = {
+  id: string;
+  nameKa: string;
+  nameRu: string;
+  nameEn: string;
+  priceGel: number;
+};
+
+type ModifierGroupDraft = {
+  id: string;
+  nameKa: string;
+  nameRu: string;
+  nameEn: string;
+  selectionType: "SINGLE" | "MULTIPLE";
+  maxSelect: number;
+  options: ModifierOptionDraft[];
+};
+
 type Item = {
   id: string;
   slug: string;
@@ -505,6 +559,9 @@ type Item = {
   available: boolean;
   photoUrl: string;
   recipeItems: RecipeLine[];
+  // Платные допы/модификаторы (см. ModifierGroup/ModifierOption в схеме) —
+  // редактируются как группа целиком, сохраняются полной заменой на сервере.
+  modifierGroups: ModifierGroupDraft[];
 };
 
 type Category = {
@@ -528,6 +585,9 @@ type VenueData = {
   urlFacebook: string;
   urlInstagram: string;
   urlMaps: string;
+  // Ссылка на форму отзыва в Google — когда задана, гостю после успешного
+  // заказа мягко предлагается оставить отзыв (см. MenuView).
+  urlGoogleReview: string;
   // Свободный текст про бренд/точку (когда и где создан, когда и где
   // открылись и т.п.) — читает ИИ-помощник, чтобы отвечать на вопросы
   // про историю заведения.
@@ -599,6 +659,11 @@ export function VenueEditor({
   const [recipePickIngredientId, setRecipePickIngredientId] = useState("");
   const [recipePickQuantity, setRecipePickQuantity] = useState("");
   const [recipePickSearch, setRecipePickSearch] = useState("");
+
+  // Открытая по клику панель редактирования допов/модификаторов — по
+  // одному блюду за раз, как и панель состава выше.
+  const [modifierPanelFor, setModifierPanelFor] = useState<string | null>(null);
+  const [modifierStatus, setModifierStatus] = useState<Record<string, "saving" | "saved" | "error">>({});
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [availabilityFilter, setAvailabilityFilter] = useState<"all" | "available" | "unavailable">("all");
@@ -758,6 +823,22 @@ export function VenueEditor({
           discountGlovoPercent: item.discountGlovoPercent,
           available: item.available,
           photoUrl: item.photoUrl || null,
+          // Полная замена: сервер удаляет старые группы/опции и создаёт эти
+          // заново — проще и надёжнее гранулярного CRUD для маленького
+          // списка допов у блюда.
+          modifierGroups: item.modifierGroups.map((g) => ({
+            nameKa: g.nameKa,
+            nameRu: g.nameRu,
+            nameEn: g.nameEn,
+            selectionType: g.selectionType,
+            maxSelect: g.maxSelect,
+            options: g.options.map((o) => ({
+              nameKa: o.nameKa,
+              nameRu: o.nameRu,
+              nameEn: o.nameEn,
+              priceGel: o.priceGel,
+            })),
+          })),
         }),
       });
       if (!res.ok) throw new Error();
@@ -766,6 +847,86 @@ export function VenueEditor({
     } catch {
       setStatus((s) => ({ ...s, [item.id]: "error" }));
     }
+  }
+
+  // Допы/модификаторы редактируются локально (как черновик) и уходят на
+  // сервер только по кнопке "Сохранить" — полной заменой, вместе с
+  // остальными полями блюда (см. saveItem выше). id новых групп/опций —
+  // просто временные ключи для React, сервер выдаёт свои настоящие id.
+  function addModifierGroup(categoryId: string, item: Item) {
+    const group: ModifierGroupDraft = {
+      id: `new-${Date.now()}`,
+      nameKa: "",
+      nameRu: "",
+      nameEn: "",
+      selectionType: "SINGLE",
+      maxSelect: 1,
+      options: [],
+    };
+    updateItem(categoryId, item.id, { modifierGroups: [...item.modifierGroups, group] });
+  }
+
+  function updateModifierGroup(
+    categoryId: string,
+    item: Item,
+    groupId: string,
+    patch: Partial<ModifierGroupDraft>
+  ) {
+    updateItem(categoryId, item.id, {
+      modifierGroups: item.modifierGroups.map((g) => (g.id === groupId ? { ...g, ...patch } : g)),
+    });
+  }
+
+  function removeModifierGroup(categoryId: string, item: Item, groupId: string) {
+    updateItem(categoryId, item.id, {
+      modifierGroups: item.modifierGroups.filter((g) => g.id !== groupId),
+    });
+  }
+
+  function addModifierOption(categoryId: string, item: Item, groupId: string) {
+    const option: ModifierOptionDraft = {
+      id: `new-${Date.now()}`,
+      nameKa: "",
+      nameRu: "",
+      nameEn: "",
+      priceGel: 0,
+    };
+    updateItem(categoryId, item.id, {
+      modifierGroups: item.modifierGroups.map((g) =>
+        g.id === groupId ? { ...g, options: [...g.options, option] } : g
+      ),
+    });
+  }
+
+  function updateModifierOption(
+    categoryId: string,
+    item: Item,
+    groupId: string,
+    optionId: string,
+    patch: Partial<ModifierOptionDraft>
+  ) {
+    updateItem(categoryId, item.id, {
+      modifierGroups: item.modifierGroups.map((g) =>
+        g.id !== groupId
+          ? g
+          : { ...g, options: g.options.map((o) => (o.id === optionId ? { ...o, ...patch } : o)) }
+      ),
+    });
+  }
+
+  function removeModifierOption(categoryId: string, item: Item, groupId: string, optionId: string) {
+    updateItem(categoryId, item.id, {
+      modifierGroups: item.modifierGroups.map((g) =>
+        g.id !== groupId ? g : { ...g, options: g.options.filter((o) => o.id !== optionId) }
+      ),
+    });
+  }
+
+  async function saveModifiers(item: Item) {
+    setModifierStatus((s) => ({ ...s, [item.id]: "saving" }));
+    await saveItem(item);
+    setModifierStatus((s) => ({ ...s, [item.id]: "saved" }));
+    setTimeout(() => setModifierStatus((s) => ({ ...s, [item.id]: undefined as any })), 1500);
   }
 
   async function uploadPhoto(categoryId: string, item: Item, file: File) {
@@ -832,7 +993,7 @@ export function VenueEditor({
       setVenue((v) => ({
         ...v,
         categories: v.categories.map((c) =>
-          c.id !== category.id ? c : { ...c, items: [...c.items, { ...created, recipeItems: [] }] }
+          c.id !== category.id ? c : { ...c, items: [...c.items, { ...created, recipeItems: [], modifierGroups: [] }] }
         ),
       }));
     }
@@ -882,7 +1043,14 @@ export function VenueEditor({
   // просто сохраняется и открывается кнопкой, автоматически ничего на
   // этих платформах не меняет (прямой связи с их API нет).
   async function saveVenueUrl(
-    key: "urlWolt" | "urlBolt" | "urlGlovo" | "urlFacebook" | "urlInstagram" | "urlMaps",
+    key:
+      | "urlWolt"
+      | "urlBolt"
+      | "urlGlovo"
+      | "urlFacebook"
+      | "urlInstagram"
+      | "urlMaps"
+      | "urlGoogleReview",
     label: string
   ) {
     const current = venue[key];
@@ -1124,7 +1292,7 @@ export function VenueEditor({
             setVenue((v) => ({
               ...v,
               categories: v.categories.map((c) =>
-                c.id !== categoryId ? c : { ...c, items: [...c.items, { ...created, recipeItems: [] }] }
+                c.id !== categoryId ? c : { ...c, items: [...c.items, { ...created, recipeItems: [], modifierGroups: [] }] }
               ),
             }));
             appliedNames.push(`${t.aiItemAdded} ${action.name}`);
@@ -1481,6 +1649,18 @@ export function VenueEditor({
           >
             {t.viewAsGuest}
           </Link>
+          <Link
+            href={`/admin/${venue.slug}/orders`}
+            className="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white"
+          >
+            📋 Заказы
+          </Link>
+          <Link
+            href={`/admin/${venue.slug}/tables`}
+            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700"
+          >
+            🪑 Столики
+          </Link>
           {(
             [
               { key: "urlWolt" as const, label: "Wolt" },
@@ -1489,6 +1669,7 @@ export function VenueEditor({
               { key: "urlFacebook" as const, label: "Facebook" },
               { key: "urlInstagram" as const, label: "Instagram" },
               { key: "urlMaps" as const, label: t.mapLabel },
+              { key: "urlGoogleReview" as const, label: "Google Review" },
             ]
           ).map((agg) =>
             venue[agg.key] ? (
@@ -2164,6 +2345,151 @@ export function VenueEditor({
                       {t.saveDiscounts}
                     </button>
                   </div>
+                </div>
+
+                <div className="flex flex-col gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-3 sm:col-start-2 sm:col-span-2">
+                  <button
+                    type="button"
+                    onClick={() => setModifierPanelFor(modifierPanelFor === item.id ? null : item.id)}
+                    className="flex w-full items-center justify-between text-left"
+                  >
+                    <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">
+                      {t.modifiersTitle}
+                      {item.modifierGroups.length > 0 && ` (${item.modifierGroups.length})`}
+                    </span>
+                    <span className="text-xs text-neutral-500">
+                      {modifierPanelFor === item.id ? t.hide : t.show}
+                    </span>
+                  </button>
+
+                  {modifierPanelFor === item.id && (
+                    <div className="mt-1 flex flex-col gap-3">
+                      <p className="text-xs text-neutral-500">{t.modifiersHelp}</p>
+
+                      {item.modifierGroups.length === 0 && (
+                        <p className="text-xs text-neutral-400">{t.noModifiers}</p>
+                      )}
+
+                      {item.modifierGroups.map((group) => (
+                        <div
+                          key={group.id}
+                          className="flex flex-col gap-2 rounded-lg border border-neutral-200 bg-white p-3"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <input
+                              value={group[NAME_FIELD[displayLocale]]}
+                              onChange={(e) =>
+                                updateModifierGroup(category.id, item, group.id, {
+                                  [NAME_FIELD[displayLocale]]: e.target.value,
+                                } as Partial<ModifierGroupDraft>)
+                              }
+                              placeholder={`${t.groupNamePlaceholder} (${displayLocale.toUpperCase()})`}
+                              className="flex-1 rounded-lg border border-neutral-300 px-2 py-1 text-sm font-medium"
+                            />
+                            <select
+                              value={group.selectionType}
+                              onChange={(e) =>
+                                updateModifierGroup(category.id, item, group.id, {
+                                  selectionType: e.target.value as "SINGLE" | "MULTIPLE",
+                                })
+                              }
+                              className="rounded-lg border border-neutral-300 px-2 py-1 text-sm"
+                            >
+                              <option value="SINGLE">{t.selectionTypeSingle}</option>
+                              <option value="MULTIPLE">{t.selectionTypeMultiple}</option>
+                            </select>
+                            {group.selectionType === "MULTIPLE" && (
+                              <label className="flex items-center gap-1 text-sm text-neutral-600">
+                                {t.maxSelectLabel}
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={group.maxSelect}
+                                  onChange={(e) =>
+                                    updateModifierGroup(category.id, item, group.id, {
+                                      maxSelect: parseInt(e.target.value, 10) || 1,
+                                    })
+                                  }
+                                  className="w-14 rounded-lg border border-neutral-300 px-2 py-1"
+                                />
+                              </label>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => removeModifierGroup(category.id, item, group.id)}
+                              className="text-xs text-red-500"
+                            >
+                              {t.deleteGroup}
+                            </button>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            {group.options.map((option) => (
+                              <div key={option.id} className="flex flex-wrap items-center gap-2">
+                                <input
+                                  value={option[NAME_FIELD[displayLocale]]}
+                                  onChange={(e) =>
+                                    updateModifierOption(category.id, item, group.id, option.id, {
+                                      [NAME_FIELD[displayLocale]]: e.target.value,
+                                    } as Partial<ModifierOptionDraft>)
+                                  }
+                                  placeholder={`${t.optionNamePlaceholder} (${displayLocale.toUpperCase()})`}
+                                  className="flex-1 rounded-lg border border-neutral-300 px-2 py-1 text-sm"
+                                />
+                                <input
+                                  type="number"
+                                  step="0.5"
+                                  value={option.priceGel}
+                                  onChange={(e) =>
+                                    updateModifierOption(category.id, item, group.id, option.id, {
+                                      priceGel: parseFloat(e.target.value) || 0,
+                                    })
+                                  }
+                                  className="w-20 rounded-lg border border-neutral-300 px-2 py-1 text-sm"
+                                />
+                                <span className="text-xs text-neutral-500">₾</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeModifierOption(category.id, item, group.id, option.id)}
+                                  className="text-xs text-red-500"
+                                >
+                                  {t.delete}
+                                </button>
+                              </div>
+                            ))}
+                            <button
+                              type="button"
+                              onClick={() => addModifierOption(category.id, item, group.id)}
+                              className="self-start text-xs text-neutral-500 underline"
+                            >
+                              {t.addModifierOption}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => addModifierGroup(category.id, item)}
+                          className="text-xs text-neutral-500 underline"
+                        >
+                          {t.addModifierGroup}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => saveModifiers(item)}
+                          className="ml-auto rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm font-medium text-neutral-700"
+                        >
+                          {modifierStatus[item.id] === "saving"
+                            ? t.saving
+                            : modifierStatus[item.id] === "saved"
+                            ? t.saved
+                            : t.saveModifiers}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {advancedOpen && (

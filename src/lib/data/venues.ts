@@ -13,6 +13,24 @@ import type { Locale } from "@/lib/i18n";
 // English names are translations added here and should be checked
 // against how you actually want them worded before going live.
 
+// Платная опция внутри группы модификаторов — например "Острый соус"
+// (+2 GEL) внутри группы "Соус".
+export type ModifierOption = {
+  id: string;
+  name: Record<Locale, string>;
+  priceGel: number;
+};
+
+// Группа платных опций у блюда — "SINGLE" рисуется радио-кнопками (ровно
+// один выбор), "MULTIPLE" — чекбоксами (до maxSelect штук).
+export type ModifierGroup = {
+  id: string;
+  name: Record<Locale, string>;
+  selectionType: "SINGLE" | "MULTIPLE";
+  maxSelect: number;
+  options: ModifierOption[];
+};
+
 export type MenuItem = {
   slug: string;
   priceGel: number;
@@ -24,6 +42,7 @@ export type MenuItem = {
   description: Record<Locale, string>;
   available: boolean;
   photoUrl?: string;
+  modifierGroups?: ModifierGroup[];
 };
 
 export type MenuCategory = {
@@ -38,6 +57,9 @@ export type Venue = {
   name: Record<Locale, string>;
   address: Record<Locale, string>;
   categories: MenuCategory[];
+  // Ссылка на форму отзыва в Google — когда задана, гостю после успешного
+  // заказа мягко предлагается оставить отзыв по этой ссылке.
+  urlGoogleReview?: string | null;
 };
 
 export const venues: Record<string, Venue> = {

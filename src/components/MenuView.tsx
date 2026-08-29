@@ -2,24 +2,68 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import type { Venue } from "@/lib/data/venues";
+import type {
+  Venue,
+  MenuItem as MenuItemT,
+  ModifierGroup as ModifierGroupT,
+} from "@/lib/data/venues";
 import { locales, localeNames, t, type Locale } from "@/lib/i18n";
 
 type CartLine = {
+  lineId: string;
   itemSlug: string;
+  optionIds: string[];
   qty: number;
 };
+
+type OrderState =
+  | { status: "idle" }
+  | { status: "submitting" }
+  | { status: "placed"; id: string; orderNumber: string };
 
 function storageKey(venueSlug: string) {
   return `cart:${venueSlug}`;
 }
 
+function lastOrderStorageKey(venueSlug: string) {
+  return `lastOrder:${venueSlug}`;
+}
+
+// Ключ строки корзины: одно и то же блюдо с одним и тем же набором
+// выбранных опций — одна строка (qty > 1); тот же slug с другим набором
+// опций — отдельная строка. Совпадает с логикой на сервере (см.
+// src/app/api/orders/route.ts), чтобы дедупликация была одинаковой.
+function lineKey(slug: string, optionIds: string[]) {
+  return `${slug}::${[...optionIds].sort().join(",")}`;
+}
+
+function statusLabel(locale: Locale, status: string) {
+  switch (status) {
+    case "NEW":
+      return t(locale, "statusNew");
+    case "IN_PROGRESS":
+      return t(locale, "statusInProgress");
+    case "READY":
+      return t(locale, "statusReady");
+    case "DONE":
+      return t(locale, "statusDone");
+    case "CANCELLED":
+      return t(locale, "statusCancelled");
+    default:
+      return status;
+  }
+}
+
 export function MenuView({
   venue,
   locale,
+  tableId,
+  tableLabel,
 }: {
   venue: Venue;
   locale: Locale;
+  tableId?: string;
+  tableLabel?: string;
 }) {
   const [cart, setCart] = useState<CartLine[]>([]);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -27,11 +71,15 @@ export function MenuView({
   const [aiMessage, setAiMessage] = useState("");
   const [aiReply, setAiReply] = useState<string | null>(null);
   const [aiRunning, setAiRunning] = useState(false);
-  const [orderState, setOrderState] = useState<
-    | { status: "idle" }
-    | { status: "submitting" }
-    | { status: "placed"; orderNumber: string }
-  >({ status: "idle" });
+  const [orderState, setOrderState] = useState<OrderState>({ status: "idle" });
+  const [liveStatus, setLiveStatus] = useState<string | null>(null);
+  const [reviewDismissed, setReviewDismissed] = useState(false);
+  const [customizeItem, setCustomizeItem] = useState<MenuItemT | null>(null);
+  const [lastOrder, setLastOrder] = useState<{ id: string; orderNumber: string } | null>(null);
+  const [lastOrderDismissed, setLastOrderDismissed] = useState(false);
+  const [waiterOpen, setWaiterOpen] = useState(false);
+  const [waiterSending, setWaiterSending] = useState(false);
+  const [waiterSentAt, setWaiterSentAt] = useState<number | null>(null);
 
   // Load/persist cart per-venue so a refresh at the table doesn't wipe it.
   useEffect(() => {
@@ -40,6 +88,12 @@ export function MenuView({
       if (raw) setCart(JSON.parse(raw));
     } catch {
       // ignore — start with an empty cart if storage is unavailable
+    }
+    try {
+      const rawLast = window.localStorage.getItem(lastOrderStorageKey(venue.slug));
+      if (rawLast) setLastOrder(JSON.parse(rawLast));
+    } catch {
+      // ignore
     }
   }, [venue.slug]);
 
@@ -51,6 +105,51 @@ export function MenuView({
     }
   }, [cart, venue.slug]);
 
+  const placedOrderId = orderState.status === "placed" ? orderState.id : null;
+
+  // Гость видит статус СВОЕГО заказа в реальном времени — опрашиваем
+  // публичный /api/orders/[id] каждые ~8 сек, пока открыт экран "заказ
+  // оформлен".
+  useEffect(() => {
+    if (!placedOrderId) {
+      setLiveStatus(null);
+      return;
+    }
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch(`/api/orders/${placedOrderId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!cancelled) setLiveStatus(data.status);
+      } catch {
+        // ignore — попробуем на следующем тике
+      }
+    }
+    poll();
+    const interval = setInterval(poll, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [placedOrderId]);
+
+  // Запоминаем последний заказ гостя (для баннера "ваш последний заказ"
+  // при следующем визите на эту же точку — например, отсканировал QR
+  // снова, или вернулся в меню по ссылке).
+  useEffect(() => {
+    if (orderState.status !== "placed") return;
+    try {
+      window.localStorage.setItem(
+        lastOrderStorageKey(venue.slug),
+        JSON.stringify({ id: orderState.id, orderNumber: orderState.orderNumber })
+      );
+    } catch {
+      // ignore
+    }
+    setLastOrder({ id: orderState.id, orderNumber: orderState.orderNumber });
+  }, [orderState, venue.slug]);
+
   const allItems = useMemo(
     () => venue.categories.flatMap((c) => c.items),
     [venue.categories]
@@ -58,6 +157,14 @@ export function MenuView({
 
   function itemBySlug(slug: string) {
     return allItems.find((i) => i.slug === slug);
+  }
+
+  function findOption(item: MenuItemT, optionId: string) {
+    for (const g of item.modifierGroups ?? []) {
+      const opt = g.options.find((o) => o.id === optionId);
+      if (opt) return opt;
+    }
+    return null;
   }
 
   // Реальная цена, которую видит и платит гость: базовая цена, если для
@@ -68,35 +175,67 @@ export function MenuView({
       : item.priceGel;
   }
 
+  function lineUnitPrice(line: CartLine) {
+    const item = itemBySlug(line.itemSlug);
+    if (!item) return 0;
+    const optionsTotal = line.optionIds.reduce((sum, id) => {
+      const opt = findOption(item, id);
+      return sum + (opt?.priceGel ?? 0);
+    }, 0);
+    return effectivePrice(item) + optionsTotal;
+  }
+
+  function lineOptionsLabel(line: CartLine) {
+    const item = itemBySlug(line.itemSlug);
+    if (!item) return "";
+    return line.optionIds
+      .map((id) => findOption(item, id)?.name[locale])
+      .filter(Boolean)
+      .join(", ");
+  }
+
+  function qtyForItemSlug(slug: string) {
+    return cart.filter((l) => l.itemSlug === slug).reduce((sum, l) => sum + l.qty, 0);
+  }
+
+  function incrementLine(lineId: string) {
+    setCart((prev) => prev.map((l) => (l.lineId === lineId ? { ...l, qty: l.qty + 1 } : l)));
+  }
+
   function addItem(slug: string) {
+    const lineId = lineKey(slug, []);
     setCart((prev) => {
-      const existing = prev.find((l) => l.itemSlug === slug);
+      const existing = prev.find((l) => l.lineId === lineId);
       if (existing) {
-        return prev.map((l) =>
-          l.itemSlug === slug ? { ...l, qty: l.qty + 1 } : l
-        );
+        return prev.map((l) => (l.lineId === lineId ? { ...l, qty: l.qty + 1 } : l));
       }
-      return [...prev, { itemSlug: slug, qty: 1 }];
+      return [...prev, { lineId, itemSlug: slug, optionIds: [], qty: 1 }];
     });
   }
 
-  function decrementItem(slug: string) {
+  function decrementItem(lineId: string) {
     setCart((prev) =>
-      prev
-        .map((l) => (l.itemSlug === slug ? { ...l, qty: l.qty - 1 } : l))
-        .filter((l) => l.qty > 0)
+      prev.map((l) => (l.lineId === lineId ? { ...l, qty: l.qty - 1 } : l)).filter((l) => l.qty > 0)
     );
   }
 
-  function removeItem(slug: string) {
-    setCart((prev) => prev.filter((l) => l.itemSlug !== slug));
+  function removeItem(lineId: string) {
+    setCart((prev) => prev.filter((l) => l.lineId !== lineId));
+  }
+
+  function addCustomizedLine(itemSlug: string, optionIds: string[], qty: number) {
+    const lineId = lineKey(itemSlug, optionIds);
+    setCart((prev) => {
+      const existing = prev.find((l) => l.lineId === lineId);
+      if (existing) {
+        return prev.map((l) => (l.lineId === lineId ? { ...l, qty: l.qty + qty } : l));
+      }
+      return [...prev, { lineId, itemSlug, optionIds, qty }];
+    });
   }
 
   const totalCount = cart.reduce((sum, l) => sum + l.qty, 0);
-  const totalPrice = cart.reduce((sum, l) => {
-    const item = itemBySlug(l.itemSlug);
-    return sum + (item ? effectivePrice(item) * l.qty : 0);
-  }, 0);
+  const totalPrice = cart.reduce((sum, l) => sum + lineUnitPrice(l) * l.qty, 0);
 
   async function placeOrder() {
     setOrderState({ status: "submitting" });
@@ -107,21 +246,18 @@ export function MenuView({
         body: JSON.stringify({
           venueSlug: venue.slug,
           locale,
-          items: cart.map((l) => {
-            const item = itemBySlug(l.itemSlug);
-            return {
-              slug: l.itemSlug,
-              qty: l.qty,
-              name: item?.name[locale],
-              // Цена со скидкой/наценкой на QR-меню, если она задана —
-              // именно её и должен заплатить гость.
-              priceGel: item ? effectivePrice(item) : undefined,
-            };
-          }),
+          tableId: tableId ?? undefined,
+          items: cart.map((l) => ({
+            slug: l.itemSlug,
+            qty: l.qty,
+            optionIds: l.optionIds,
+          })),
         }),
       });
       const data = await res.json();
-      setOrderState({ status: "placed", orderNumber: data.orderNumber });
+      if (!res.ok) throw new Error(data.error || "failed");
+      setReviewDismissed(false);
+      setOrderState({ status: "placed", id: data.id, orderNumber: String(data.orderNumber) });
       setCart([]);
     } catch {
       setOrderState({ status: "idle" });
@@ -132,6 +268,33 @@ export function MenuView({
     setOrderState({ status: "idle" });
     setDrawerOpen(false);
   }
+
+  async function callWaiter(reason: string) {
+    if (!tableId) return;
+    setWaiterSending(true);
+    try {
+      await fetch("/api/waiter-calls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tableId, reason }),
+      });
+      setWaiterSentAt(Date.now());
+      setTimeout(() => {
+        setWaiterOpen(false);
+        setWaiterSentAt(null);
+      }, 2500);
+    } catch {
+      // ignore — гость может попробовать ещё раз
+    }
+    setWaiterSending(false);
+  }
+
+  const WAITER_REASONS = [
+    { key: "water", label: t(locale, "callWaiterReasonWater") },
+    { key: "bill", label: t(locale, "callWaiterReasonBill") },
+    { key: "help", label: t(locale, "callWaiterReasonHelp") },
+    { key: "other", label: t(locale, "callWaiterReasonOther") },
+  ];
 
   // Только отвечает на вопросы про меню (состав, наличие, история бренда)
   // — не может ничего менять в системе, это read-only помощник для гостя.
@@ -174,12 +337,17 @@ export function MenuView({
           </p>
           <h1 className="text-xl font-semibold">{venue.name[locale]}</h1>
           <p className="text-sm text-white/80">{venue.address[locale]}</p>
+          {tableLabel && (
+            <p className="mt-1 text-xs font-medium uppercase tracking-wide text-white/70">
+              {tableLabel}
+            </p>
+          )}
         </div>
         <div className="mt-4 flex gap-2">
           {locales.map((l) => (
             <Link
               key={l}
-              href={`/${l}/menu/${venue.slug}`}
+              href={`/${l}/menu/${venue.slug}${tableId ? `?table=${tableId}` : ""}`}
               className={`rounded-full px-3 py-1 text-sm font-medium transition ${
                 l === locale
                   ? "bg-white text-neutral-900"
@@ -192,6 +360,33 @@ export function MenuView({
         </div>
       </header>
 
+      {lastOrder && !lastOrderDismissed && orderState.status === "idle" && (
+        <div className="mx-5 mt-4 flex items-center justify-between rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-sm">
+          <span className="text-neutral-600">
+            {t(locale, "lastOrderBanner")} #{lastOrder.orderNumber}
+          </span>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                setOrderState({ status: "placed", id: lastOrder.id, orderNumber: lastOrder.orderNumber });
+                setDrawerOpen(true);
+              }}
+              className="font-medium underline"
+              style={{ color: venue.brandColor }}
+            >
+              {t(locale, "lastOrderView")}
+            </button>
+            <button
+              onClick={() => setLastOrderDismissed(true)}
+              className="text-neutral-400"
+              aria-label="dismiss"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="px-5">
         {venue.categories.map((category) => (
           <section key={category.slug} className="mt-6">
@@ -200,8 +395,11 @@ export function MenuView({
             </h2>
             <ul className="flex flex-col gap-3">
               {category.items.map((item) => {
-                const line = cart.find((l) => l.itemSlug === item.slug);
-                const qty = line?.qty ?? 0;
+                const hasModifiers = (item.modifierGroups?.length ?? 0) > 0;
+                const line = hasModifiers
+                  ? null
+                  : cart.find((l) => l.lineId === lineKey(item.slug, []));
+                const qty = hasModifiers ? qtyForItemSlug(item.slug) : line?.qty ?? 0;
                 return (
                   <li
                     key={item.slug}
@@ -246,12 +444,27 @@ export function MenuView({
                         <p className="mt-2 text-xs font-medium text-red-500">
                           {t(locale, "outOfStock")}
                         </p>
+                      ) : hasModifiers ? (
+                        <div className="mt-3 flex items-center justify-end gap-3">
+                          {qty > 0 && (
+                            <span className="text-sm font-medium text-neutral-500">
+                              {qty}
+                            </span>
+                          )}
+                          <button
+                            onClick={() => setCustomizeItem(item)}
+                            className="rounded-full px-4 py-2 text-sm font-medium text-white"
+                            style={{ backgroundColor: venue.brandColor }}
+                          >
+                            {t(locale, "modifierAddToCart")}
+                          </button>
+                        </div>
                       ) : (
                         <div className="mt-3 flex items-center justify-end gap-3">
                           {qty > 0 && (
                             <>
                               <button
-                                onClick={() => decrementItem(item.slug)}
+                                onClick={() => line && decrementItem(line.lineId)}
                                 aria-label="-"
                                 className="flex h-8 w-8 items-center justify-center rounded-full border border-neutral-300 text-lg font-medium text-neutral-700"
                               >
@@ -294,6 +507,57 @@ export function MenuView({
             {totalPrice.toFixed(2)} {t(locale, "currency")}
           </span>
         </button>
+      )}
+
+      {tableId && (
+        <div className="fixed bottom-24 left-5 z-40 flex flex-col items-start gap-2">
+          {waiterOpen && (
+            <div className="w-64 max-w-[calc(100vw-2.5rem)] rounded-xl border border-neutral-200 bg-white p-3 shadow-xl">
+              {waiterSentAt ? (
+                <p className="py-2 text-center text-sm font-medium text-neutral-700">
+                  {t(locale, "callWaiterSent")}
+                </p>
+              ) : (
+                <>
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-sm font-semibold text-neutral-700">
+                      {t(locale, "callWaiterTitle")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setWaiterOpen(false)}
+                      className="text-sm text-neutral-400 hover:text-neutral-600"
+                      aria-label="close"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {WAITER_REASONS.map((r) => (
+                      <button
+                        key={r.key}
+                        type="button"
+                        disabled={waiterSending}
+                        onClick={() => callWaiter(r.key)}
+                        className="rounded-lg border border-neutral-200 px-3 py-2 text-left text-sm text-neutral-700 hover:bg-neutral-50 disabled:opacity-50"
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setWaiterOpen((v) => !v)}
+            aria-label={t(locale, "callWaiterTitle")}
+            className="flex h-12 w-12 items-center justify-center rounded-full bg-neutral-900 text-xl text-white shadow-xl hover:bg-neutral-700"
+          >
+            {waiterOpen ? "✕" : "🛎️"}
+          </button>
+        </div>
       )}
 
       <div className="fixed bottom-24 right-5 z-40 flex flex-col items-end gap-2">
@@ -345,6 +609,19 @@ export function MenuView({
         </button>
       </div>
 
+      {customizeItem && (
+        <ItemModifierModal
+          item={customizeItem}
+          locale={locale}
+          brandColor={venue.brandColor}
+          onClose={() => setCustomizeItem(null)}
+          onAdd={(optionIds, qty) => {
+            addCustomizedLine(customizeItem.slug, optionIds, qty);
+            setCustomizeItem(null);
+          }}
+        />
+      )}
+
       {drawerOpen && (
         <div className="fixed inset-0 z-30 flex items-end justify-center bg-black/40">
           <div className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5">
@@ -362,6 +639,41 @@ export function MenuView({
                 <p className="text-neutral-500">
                   {t(locale, "orderPlacedBody")}: #{orderState.orderNumber}
                 </p>
+                <span
+                  className="mt-1 inline-block rounded-full px-3 py-1 text-sm font-medium"
+                  style={{ backgroundColor: `${venue.brandColor}1a`, color: venue.brandColor }}
+                >
+                  {t(locale, "orderStatusLabel")}: {statusLabel(locale, liveStatus ?? "NEW")}
+                </span>
+
+                {liveStatus === "DONE" && venue.urlGoogleReview && !reviewDismissed && (
+                  <div className="mt-3 w-full rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+                    <p className="font-medium text-neutral-800">
+                      {t(locale, "reviewPromptTitle")}
+                    </p>
+                    <p className="mt-1 text-sm text-neutral-500">
+                      {t(locale, "reviewPromptBody")}
+                    </p>
+                    <div className="mt-3 flex justify-center gap-2">
+                      <a
+                        href={venue.urlGoogleReview}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-full px-4 py-2 text-sm font-medium text-white"
+                        style={{ backgroundColor: venue.brandColor }}
+                      >
+                        {t(locale, "reviewPromptCta")}
+                      </a>
+                      <button
+                        onClick={() => setReviewDismissed(true)}
+                        className="rounded-full border border-neutral-300 px-4 py-2 text-sm text-neutral-600"
+                      >
+                        {t(locale, "reviewPromptDismiss")}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={startNewOrder}
                   className="mt-2 rounded-full px-5 py-2 text-white"
@@ -394,47 +706,40 @@ export function MenuView({
                     {cart.map((line) => {
                       const item = itemBySlug(line.itemSlug);
                       if (!item) return null;
+                      const optionsLabel = lineOptionsLabel(line);
+                      const unitPrice = lineUnitPrice(line);
                       return (
                         <li
-                          key={line.itemSlug}
+                          key={line.lineId}
                           className="flex items-center justify-between gap-3 border-b border-neutral-100 pb-3"
                         >
                           <div>
                             <p className="font-medium text-neutral-800">
                               {item.name[locale]}
                             </p>
+                            {optionsLabel && (
+                              <p className="text-xs text-neutral-400">{optionsLabel}</p>
+                            )}
                             <p className="text-sm text-neutral-500">
-                              {item.discountMenuPercent != null ? (
-                                <>
-                                  <span className="mr-1 line-through">
-                                    {item.priceGel} {t(locale, "currency")}
-                                  </span>
-                                  {effectivePrice(item).toFixed(2)} {t(locale, "currency")}
-                                </>
-                              ) : (
-                                <>
-                                  {item.priceGel} {t(locale, "currency")}
-                                </>
-                              )}{" "}
-                              × {line.qty}
+                              {unitPrice.toFixed(2)} {t(locale, "currency")} × {line.qty}
                             </p>
                           </div>
                           <div className="flex items-center gap-2">
                             <button
-                              onClick={() => decrementItem(line.itemSlug)}
+                              onClick={() => decrementItem(line.lineId)}
                               className="flex h-7 w-7 items-center justify-center rounded-full border border-neutral-300"
                             >
                               −
                             </button>
                             <span className="w-4 text-center">{line.qty}</span>
                             <button
-                              onClick={() => addItem(line.itemSlug)}
+                              onClick={() => incrementLine(line.lineId)}
                               className="flex h-7 w-7 items-center justify-center rounded-full border border-neutral-300"
                             >
                               +
                             </button>
                             <button
-                              onClick={() => removeItem(line.itemSlug)}
+                              onClick={() => removeItem(line.lineId)}
                               className="ml-2 text-xs text-red-500"
                             >
                               {t(locale, "remove")}
@@ -472,5 +777,151 @@ export function MenuView({
         </div>
       )}
     </main>
+  );
+}
+
+// Модалка выбора платных опций блюда (модификаторов) — открывается по
+// кнопке "Добавить" у блюд, у которых заданы modifierGroups. Блюда без
+// модификаторов используют простой инлайн-степпер +/- в самом списке.
+function ItemModifierModal({
+  item,
+  locale,
+  brandColor,
+  onClose,
+  onAdd,
+}: {
+  item: MenuItemT;
+  locale: Locale;
+  brandColor: string;
+  onClose: () => void;
+  onAdd: (optionIds: string[], qty: number) => void;
+}) {
+  const [selections, setSelections] = useState<Record<string, string[]>>({});
+  const [qty, setQty] = useState(1);
+
+  const groups: ModifierGroupT[] = item.modifierGroups ?? [];
+
+  function toggle(group: ModifierGroupT, optionId: string) {
+    setSelections((prev) => {
+      const current = prev[group.id] ?? [];
+      if (group.selectionType === "SINGLE") {
+        return { ...prev, [group.id]: [optionId] };
+      }
+      if (current.includes(optionId)) {
+        return { ...prev, [group.id]: current.filter((id) => id !== optionId) };
+      }
+      if (current.length >= group.maxSelect) return prev;
+      return { ...prev, [group.id]: [...current, optionId] };
+    });
+  }
+
+  const canSubmit = groups.every(
+    (g) => g.selectionType !== "SINGLE" || (selections[g.id]?.length ?? 0) === 1
+  );
+
+  const basePrice =
+    item.discountMenuPercent != null
+      ? item.priceGel * (1 - item.discountMenuPercent / 100)
+      : item.priceGel;
+  const optionsTotal = groups.reduce((sum, g) => {
+    const selected = selections[g.id] ?? [];
+    return (
+      sum +
+      selected.reduce((s, id) => {
+        const opt = g.options.find((o) => o.id === id);
+        return s + (opt?.priceGel ?? 0);
+      }, 0)
+    );
+  }, 0);
+  const unitTotal = basePrice + optionsTotal;
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/40">
+      <div className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-neutral-800">{item.name[locale]}</h2>
+          <button onClick={onClose} className="text-neutral-400" aria-label="close">
+            ✕
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-5">
+          {groups.map((g) => (
+            <div key={g.id}>
+              <p className="mb-2 text-sm font-semibold text-neutral-700">
+                {g.name[locale]}{" "}
+                <span className="ml-1 text-xs font-normal text-neutral-400">
+                  {g.selectionType === "SINGLE"
+                    ? t(locale, "modifierChooseOne")
+                    : `${t(locale, "modifierChooseUpTo")} ${g.maxSelect}`}
+                </span>
+              </p>
+              <div className="flex flex-col gap-2">
+                {g.options.map((o) => {
+                  const checked = (selections[g.id] ?? []).includes(o.id);
+                  return (
+                    <label
+                      key={o.id}
+                      className={`flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 text-sm ${
+                        checked ? "border-neutral-800 bg-neutral-50" : "border-neutral-200"
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <input
+                          type={g.selectionType === "SINGLE" ? "radio" : "checkbox"}
+                          name={g.id}
+                          checked={checked}
+                          onChange={() => toggle(g, o.id)}
+                        />
+                        {o.name[locale]}
+                      </span>
+                      {o.priceGel > 0 && (
+                        <span className="text-neutral-500">
+                          +{o.priceGel} {t(locale, "currency")}
+                        </span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-neutral-500">{t(locale, "modifierQty")}</span>
+            <button
+              onClick={() => setQty((q) => Math.max(1, q - 1))}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-neutral-300 text-lg"
+            >
+              −
+            </button>
+            <span className="w-4 text-center font-medium">{qty}</span>
+            <button
+              onClick={() => setQty((q) => q + 1)}
+              className="flex h-8 w-8 items-center justify-center rounded-full border border-neutral-300 text-lg"
+            >
+              +
+            </button>
+          </div>
+          <span className="text-sm text-neutral-500">
+            {t(locale, "modifierTotalPrice")}: {(unitTotal * qty).toFixed(2)} {t(locale, "currency")}
+          </span>
+        </div>
+
+        <button
+          onClick={() => {
+            const optionIds = groups.flatMap((g) => selections[g.id] ?? []);
+            onAdd(optionIds, qty);
+          }}
+          disabled={!canSubmit}
+          className="mt-4 w-full rounded-full py-3 font-medium text-white disabled:opacity-40"
+          style={{ backgroundColor: brandColor }}
+        >
+          {t(locale, "modifierAddToCart")}
+        </button>
+      </div>
+    </div>
   );
 }

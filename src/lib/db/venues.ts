@@ -17,6 +17,10 @@ export async function getVenueFromDb(slug: string): Promise<Venue | null> {
             orderBy: { sortOrder: "asc" },
             include: {
               recipeItems: { orderBy: { sortOrder: "asc" }, include: { ingredient: true } },
+              modifierGroups: {
+                orderBy: { sortOrder: "asc" },
+                include: { options: { orderBy: { sortOrder: "asc" } } },
+              },
             },
           },
         },
@@ -31,6 +35,7 @@ export async function getVenueFromDb(slug: string): Promise<Venue | null> {
     brandColor: venue.brandColor,
     name: { ka: venue.nameKa, ru: venue.nameRu, en: venue.nameEn },
     address: { ka: venue.addressKa, ru: venue.addressRu, en: venue.addressEn },
+    urlGoogleReview: venue.urlGoogleReview,
     categories: venue.categories.map(
       (c): MenuCategory => ({
         slug: c.slug,
@@ -50,6 +55,17 @@ export async function getVenueFromDb(slug: string): Promise<Venue | null> {
             // все ингредиенты его состава в наличии (если состав указан).
             available: i.available && i.recipeItems.every((ri) => ri.ingredient.available),
             photoUrl: i.photoUrl ?? undefined,
+            modifierGroups: i.modifierGroups.map((g) => ({
+              id: g.id,
+              name: { ka: g.nameKa, ru: g.nameRu, en: g.nameEn },
+              selectionType: g.selectionType === "MULTIPLE" ? "MULTIPLE" : "SINGLE",
+              maxSelect: g.maxSelect,
+              options: g.options.map((o) => ({
+                id: o.id,
+                name: { ka: o.nameKa, ru: o.nameRu, en: o.nameEn },
+                priceGel: Number(o.priceGel),
+              })),
+            })),
           })
         ),
       })

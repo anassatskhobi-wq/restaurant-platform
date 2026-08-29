@@ -29,6 +29,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
       urlFacebook: body.urlFacebook !== undefined ? body.urlFacebook || null : undefined,
       urlInstagram: body.urlInstagram !== undefined ? body.urlInstagram || null : undefined,
       urlMaps: body.urlMaps !== undefined ? body.urlMaps || null : undefined,
+      urlGoogleReview: body.urlGoogleReview !== undefined ? body.urlGoogleReview || null : undefined,
       aboutText: body.aboutText !== undefined ? body.aboutText || null : undefined,
     },
   });

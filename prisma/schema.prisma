@@ -4,8 +4,11 @@
 //
 // Setup (see README.md "Админ-панель и база данных"):
 //   1. npm install
-//   2. Put your Supabase connection string in .env as DATABASE_URL
-//      (and NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY)
+//   2. Put your Supabase connection strings in .env as DATABASE_URL
+//      (pooled, "Transaction", with &pgbouncer=true) and DIRECT_URL
+//      (non-pooled, "Session"/"Direct connection") — see the datasource
+//      block below for why both are needed — plus
+//      NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY
 //   3. npx prisma migrate dev --name init
 //   4. npx prisma db seed   (loads the venues.ts demo data into Postgres)
 
@@ -15,7 +18,16 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // DATABASE_URL — обычная строка подключения (через PgBouncer/Supavisor,
+  // с &pgbouncer=true) — ей пользуется работающее приложение.
+  // DIRECT_URL — отдельная НЕ-пуловая строка подключения (порт 5432 в
+  // Supabase, без pgbouncer=true) — нужна только для `prisma migrate`,
+  // потому что миграциям нужны advisory locks, которые PgBouncer в
+  // transaction-режиме не поддерживает. Обе строки берутся в Supabase на
+  // вкладке Project Settings → Database → Connection string (первая —
+  // "Transaction", вторая — "Session"/"Direct connection").
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Tenant {
@@ -42,6 +54,7 @@ model Venue {
   tables     Table[]
   staff      StaffMember[]
   ingredients Ingredient[]
+  orders     Order[]
   // Ссылки на страницу этой точки на агрегаторах доставки — просто
   // хранятся и открываются кнопкой в админке, автоматического обновления
   // цен/наличия на этих платформах отсюда нет (нет доступа к их API).
@@ -51,6 +64,11 @@ model Venue {
   urlFacebook  String?
   urlInstagram String?
   urlMaps      String?
+  // Ссылка на форму отзыва этой точки в Google (Google Maps "написать
+  // отзыв") — когда задана, гостю после успешного заказа мягко
+  // предлагается оставить отзыв по этой ссылке.
+  urlGoogleReview String?
+  waiterCalls  WaiterCall[]
   // Свободный текст про бренд/точку (когда и где создан бренд, когда и
   // где открылись, история и т.п.) — заполняется вручную оператором,
   // ИИ-помощник читает это, чтобы отвечать на вопросы про историю заведения.
@@ -96,6 +114,38 @@ model MenuItem {
   photoUrl      String?
   sortOrder     Int          @default(0)
   recipeItems   RecipeItem[]
+  orderItems    OrderItem[]
+  modifierGroups ModifierGroup[]
+}
+
+// Группа платных опций у блюда — например "Соус" (выбрать одну) или
+// "Дополнительно" (выбрать до нескольких). Гость выбирает их в гостевом
+// меню перед добавлением блюда в корзину; выбор влияет на итоговую цену
+// строки заказа (см. ModifierOption.priceGel и OrderItem.modifiersSnapshot).
+model ModifierGroup {
+  id            String           @id @default(cuid())
+  menuItemId    String
+  menuItem      MenuItem         @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  nameKa        String
+  nameRu        String
+  nameEn        String
+  // "SINGLE" — радио-кнопки, ровно один выбор (например "Соус", "Размер").
+  // "MULTIPLE" — чекбоксы, до maxSelect штук (например "Допы").
+  selectionType String           @default("SINGLE")
+  maxSelect     Int              @default(1) // используется только при selectionType = "MULTIPLE"
+  sortOrder     Int              @default(0)
+  options       ModifierOption[]
+}
+
+model ModifierOption {
+  id        String        @id @default(cuid())
+  groupId   String
+  group     ModifierGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  nameKa    String
+  nameRu    String
+  nameEn    String
+  priceGel  Decimal       @default(0)
+  sortOrder Int           @default(0)
 }
 
 // Ингредиент точки (своя база у каждого Venue) — название, единица
@@ -135,10 +185,69 @@ model RecipeItem {
 }
 
 model Table {
-  id      String @id @default(cuid())
-  venueId String
-  venue   Venue  @relation(fields: [venueId], references: [id], onDelete: Cascade)
-  label   String // e.g. "Table 5", printed on the QR code
+  id          String       @id @default(cuid())
+  venueId     String
+  venue       Venue        @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  label       String       // e.g. "Table 5", printed on the QR code
+  createdAt   DateTime     @default(now())
+  orders      Order[]
+  waiterCalls WaiterCall[]
+}
+
+// Вызов официанта гостем со страницы меню (виден только когда меню
+// открыто по ссылке конкретного стола — см. ?table=<id>). status "NEW"
+// означает, что персонал ещё не отреагировал; отображается на общей
+// доске заказов /admin/[venueSlug]/orders вместе с заказами.
+model WaiterCall {
+  id        String   @id @default(cuid())
+  venueId   String
+  venue     Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  tableId   String
+  table     Table    @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  reason    String
+  status    String   @default("NEW") // "NEW" | "DONE"
+  createdAt DateTime @default(now())
+}
+
+// STEP 2 — реальные заказы (вместо демо-заглушки в /api/orders).
+// orderNumber — сквозной номер, но СВОЙ У КАЖДОГО VENUE (не общий на всю
+// платформу): у ресторана A заказ №1 и у ресторана B заказ №1 — это два
+// разных заказа. Гарантируется уникальностью [venueId, orderNumber] ниже;
+// сам номер присваивается в транзакции в /api/orders.
+model Order {
+  id          String      @id @default(cuid())
+  venueId     String
+  venue       Venue       @relation(fields: [venueId], references: [id])
+  orderNumber Int
+  // NEW → IN_PROGRESS → READY → DONE, либо CANCELLED в любой момент.
+  status      String      @default("NEW")
+  locale      String
+  tableId     String?
+  table       Table?      @relation(fields: [tableId], references: [id])
+  totalGel    Decimal
+  items       OrderItem[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([venueId, orderNumber])
+}
+
+// Снимок блюда на момент заказа: имя и цена сохраняются такими, какими
+// были при оформлении, даже если позже блюдо в меню переименуют, удалят
+// или изменят цену/скидку — старый заказ не должен "поехать" задним числом.
+model OrderItem {
+  id           String    @id @default(cuid())
+  orderId      String
+  order        Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItemId   String?
+  menuItem     MenuItem? @relation(fields: [menuItemId], references: [id], onDelete: SetNull)
+  nameSnapshot String
+  priceGel     Decimal
+  qty          Int
+  // Выбранные платные опции на момент заказа — снимок вида
+  // [{ groupName, optionName, priceGel }], независимый от последующих
+  // правок ModifierGroup/ModifierOption у самого блюда.
+  modifiersSnapshot Json?
 }
 
 // Links a Supabase Auth user (by their auth.users id) to a tenant/venue
