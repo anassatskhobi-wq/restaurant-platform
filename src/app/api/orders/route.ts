@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 
 // STEP 2 — реальные заказы: сохраняем в Postgres через Prisma вместо
 // STEP 0/1 заглушки (раньше номер был Math.random() и никуда не писался).
@@ -161,7 +162,7 @@ export async function POST(request: Request) {
       nameSnapshot: nameForLocale(mi, locale),
       priceGel: basePrice + modifiersTotal,
       qty,
-      modifiersSnapshot: modifiersSnapshot.length ? modifiersSnapshot : null,
+            modifiersSnapshot: modifiersSnapshot.length ? modifiersSnapshot : Prisma.JsonNull,
     });
   }
 
