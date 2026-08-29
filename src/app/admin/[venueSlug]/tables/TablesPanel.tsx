@@ -31,7 +31,11 @@ export function TablesPanel({
   initialTables: Table[];
 }) {
   const [tables, setTables] = useState<Table[]>(initialTables);
-  const [newLabel, setNewLabel] = useState("");
+  // Поле для нового столика само предлагает следующий номер по порядку
+  // ("Стол 1", "Стол 2", ...) — чтобы не приходилось придумывать название
+  // каждый раз и не было случайных дублей/путаницы у официантов. Название
+  // всё равно можно поменять на любое — это просто подсказка.
+  const [newLabel, setNewLabel] = useState(`Стол ${initialTables.length + 1}`);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -51,7 +55,7 @@ export function TablesPanel({
       if (!res.ok) throw new Error();
       const created = await res.json();
       setTables((list) => [...list, created]);
-      setNewLabel("");
+      setNewLabel(`Стол ${tables.length + 2}`);
     } catch {
       alert("Не удалось добавить столик — проверь интернет и попробуй ещё раз.");
     } finally {
@@ -85,7 +89,7 @@ export function TablesPanel({
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-6">
-      <div className="mb-4 flex items-center justify-between gap-3">
+      <div className="mb-4 flex items-center justify-between gap-3 print:hidden">
         <div>
           <h1 className="text-lg font-semibold text-neutral-800">{venueName} — столики</h1>
           <p className="text-xs text-neutral-400">
@@ -94,15 +98,25 @@ export function TablesPanel({
             «Позвать официанта».
           </p>
         </div>
-        <Link
-          href={`/admin/${venueSlug}`}
-          className="shrink-0 rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-600"
-        >
-          ← В меню
-        </Link>
+        <div className="flex shrink-0 items-center gap-2">
+          {tables.length > 0 && (
+            <button
+              onClick={() => window.print()}
+              className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-700"
+            >
+              🖨️ Распечатать все
+            </button>
+          )}
+          <Link
+            href={`/admin/${venueSlug}`}
+            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-sm text-neutral-600"
+          >
+            ← В меню
+          </Link>
+        </div>
       </div>
 
-      <div className="mb-6 flex items-center gap-2">
+      <div className="mb-6 flex items-center gap-2 print:hidden">
         <input
           value={newLabel}
           onChange={(e) => setNewLabel(e.target.value)}
@@ -126,15 +140,16 @@ export function TablesPanel({
           Столиков пока нет — добавьте первый выше.
         </p>
       ) : (
-        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 print:grid-cols-2 print:gap-8">
           {tables.map((table) => {
             const url = guestUrl(origin, venueSlug, table.id);
             return (
               <li
                 key={table.id}
-                className="flex flex-col items-center gap-3 rounded-xl border border-neutral-200 bg-white p-4 text-center shadow-sm"
+                className="flex flex-col items-center gap-3 rounded-xl border border-neutral-200 bg-white p-4 text-center shadow-sm print:break-inside-avoid print:border-neutral-400 print:shadow-none"
               >
-                <p className="font-semibold text-neutral-800">{table.label}</p>
+                {/* Номер столика — крупно, чтобы легко читался на распечатанной табличке и не путал официанта */}
+                <p className="text-xl font-bold text-neutral-800">{table.label}</p>
                 {origin && (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -143,10 +158,10 @@ export function TablesPanel({
                     className="h-40 w-40"
                   />
                 )}
-                <p className="w-full truncate text-xs text-neutral-400" title={url}>
+                <p className="w-full truncate text-xs text-neutral-400 print:hidden" title={url}>
                   {url}
                 </p>
-                <div className="flex gap-2">
+                <div className="flex gap-2 print:hidden">
                   <button
                     onClick={() => copyLink(table.id)}
                     className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs text-neutral-600"
