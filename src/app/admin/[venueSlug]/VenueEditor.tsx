@@ -690,28 +690,64 @@ export function VenueEditor({
   const [bulkOp, setBulkOp] = useState<"setPrice" | "adjustPriceAmount" | "adjustPricePercent">(
     "setPrice"
   );
-  // "menu" — основная цена (одна везде); "all" — сразу все площадки
-  // (QR-меню + Wolt + Bolt + Glovo); иначе действие применяется не к
-  // цене, а к скидке/наценке (%) блюда на этой площадке.
-  const [bulkPlatform, setBulkPlatform] = useState<"menu" | "qr" | "wolt" | "bolt" | "glovo" | "all">(
-    "menu"
-  );
+  // "menu" — основная цена (одна везде), выбирается ОТДЕЛЬНО от площадок
+  // ниже (взаимоисключающе — своя единица измерения, ₾ вместо %).
+  // qr/wolt/bolt/glovo — можно отмечать сразу несколько галочками; тогда
+  // действие (значение/сброс) применяется к скидке/наценке (%) на всех
+  // отмеченных площадках разом.
+  type BulkPlatformKey = "menu" | "qr" | "wolt" | "bolt" | "glovo";
+  const [bulkPlatforms, setBulkPlatforms] = useState<Set<BulkPlatformKey>>(new Set(["menu"]));
+  const [showPlatformPicker, setShowPlatformPicker] = useState(false);
   const [bulkValue, setBulkValue] = useState("");
   const [bulkSign, setBulkSign] = useState<"add" | "subtract">("add");
   const [bulkStatus, setBulkStatus] = useState<"applying" | "resetting" | "error" | null>(null);
 
-  // Поля скидок по каждой площадке — используется и для "Все платформы"
-  // в массовых операциях (bulk), и для кнопки сброса цены.
+  // Поля скидок по каждой площадке — используется и для массовых
+  // операций (bulk) по нескольким отмеченным площадкам разом, и для
+  // кнопки сброса цены.
   const PLATFORM_DISCOUNT_FIELDS: Record<
-    string,
-    ("discountMenuPercent" | "discountWoltPercent" | "discountBoltPercent" | "discountGlovoPercent")[]
+    Exclude<BulkPlatformKey, "menu">,
+    "discountMenuPercent" | "discountWoltPercent" | "discountBoltPercent" | "discountGlovoPercent"
   > = {
-    qr: ["discountMenuPercent"],
-    wolt: ["discountWoltPercent"],
-    bolt: ["discountBoltPercent"],
-    glovo: ["discountGlovoPercent"],
-    all: ["discountMenuPercent", "discountWoltPercent", "discountBoltPercent", "discountGlovoPercent"],
+    qr: "discountMenuPercent",
+    wolt: "discountWoltPercent",
+    bolt: "discountBoltPercent",
+    glovo: "discountGlovoPercent",
   };
+
+  const isMenuPlatform = bulkPlatforms.has("menu");
+  const selectedNonMenuPlatforms = Array.from(bulkPlatforms).filter(
+    (p): p is Exclude<BulkPlatformKey, "menu"> => p !== "menu"
+  );
+
+  // "menu" исключает все остальные площадки (разные единицы измерения) и
+  // наоборот; можно отметить сразу несколько из qr/wolt/bolt/glovo.
+  function togglePlatform(key: BulkPlatformKey) {
+    setBulkPlatforms((s) => {
+      if (key === "menu") return new Set(["menu"]);
+      const next = new Set(s);
+      next.delete("menu");
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      if (next.size === 0) next.add("menu");
+      if (next.has("qr") === false && next.has("wolt") === false && next.has("bolt") === false && next.has("glovo") === false) {
+        next.add("menu");
+      }
+      return next;
+    });
+  }
+
+  function platformLabel(key: BulkPlatformKey): string {
+    if (key === "menu") return t.bulkPlatformMenu;
+    if (key === "qr") return t.discountMenuLabel;
+    if (key === "wolt") return "Wolt";
+    if (key === "bolt") return "Bolt";
+    return "Glovo";
+  }
+
+  const platformPickerSummary = isMenuPlatform
+    ? t.bulkPlatformMenu
+    : selectedNonMenuPlatforms.map((p) => platformLabel(p)).join(", ");
 
   // Название ингредиента на текущем языке — с откатом на старое единое
   // поле name (у ингредиентов, добавленных до языкового переключателя,
@@ -762,15 +798,14 @@ export function VenueEditor({
   async function applyBulkPrice() {
     const value = parseFloat(bulkValue);
     if (selected.size === 0 || Number.isNaN(value)) return;
-    if (bulkPlatform === "all") return; // "Все платформы" — только для сброса, не для этой кнопки
+    if (!isMenuPlatform && selectedNonMenuPlatforms.length === 0) return;
     // "Дешевле (-)"/"Дороже (+)" всегда должны означать направление
     // ИТОГОВОЙ ЦЕНЫ. Для основной цены это просто -value/+value. Но для
     // скидки на площадке (%) связь обратная: цена ниже — значит % (скидка)
     // должен вырасти, а не уменьшиться — поэтому знак здесь инвертирован.
     let signedValue = value;
     if (bulkOp !== "setPrice") {
-      const isPercentPlatform = bulkPlatform !== "menu";
-      signedValue = isPercentPlatform
+      signedValue = !isMenuPlatform
         ? bulkSign === "subtract"
           ? value
           : -value
@@ -780,19 +815,25 @@ export function VenueEditor({
     }
     setBulkStatus("applying");
     try {
-      const res = await fetch("/api/admin/items/bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          itemIds: Array.from(selected),
-          action: bulkOp,
-          value: signedValue,
-          platform: bulkPlatform,
-        }),
-      });
-      if (!res.ok) throw new Error();
-      const { items } = await res.json();
-      applyLocalUpdates(items);
+      // Основная цена — один запрос с platform "menu". Для площадок со
+      // скидкой (%) — по одному запросу на каждую отмеченную площадку,
+      // подряд, результаты каждого сразу применяются на экране.
+      const platformsToApply: string[] = isMenuPlatform ? ["menu"] : selectedNonMenuPlatforms;
+      for (const platform of platformsToApply) {
+        const res = await fetch("/api/admin/items/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            itemIds: Array.from(selected),
+            action: bulkOp,
+            value: signedValue,
+            platform,
+          }),
+        });
+        if (!res.ok) throw new Error();
+        const { items } = await res.json();
+        applyLocalUpdates(items);
+      }
       setBulkStatus(null);
       setBulkValue("");
     } catch {
@@ -800,14 +841,13 @@ export function VenueEditor({
     }
   }
 
-  // Сброс цены (скидки) на выбранной площадке — или сразу на всех
-  // площадках, если выбрано "Все платформы" — для всех отмеченных
+  // Сброс цены (скидки) на всех отмеченных площадках (может быть одна
+  // или сразу несколько — QR-меню/Wolt/Bolt/Glovo) для всех отмеченных
   // позиций. Обнуляет discount*Percent (возвращает к базовой цене
   // priceGel), не трогая саму базовую цену.
   async function resetBulkPrices() {
-    if (selected.size === 0 || bulkPlatform === "menu") return;
-    const fields = PLATFORM_DISCOUNT_FIELDS[bulkPlatform];
-    if (!fields) return;
+    if (selected.size === 0 || isMenuPlatform || selectedNonMenuPlatforms.length === 0) return;
+    const fields = selectedNonMenuPlatforms.map((p) => PLATFORM_DISCOUNT_FIELDS[p]);
     setBulkStatus("resetting");
     try {
       const itemsToReset = allItemsFlat.filter((i) => selected.has(i.id));
@@ -2767,41 +2807,65 @@ export function VenueEditor({
 
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm text-neutral-500">{t.bulkPlatformLabel}</span>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowPlatformPicker((v) => !v)}
+                  className="flex items-center gap-1 rounded-lg border border-neutral-300 px-2 py-1 text-sm"
+                >
+                  {platformPickerSummary}
+                  <span className="text-neutral-400">▾</span>
+                </button>
+
+                {showPlatformPicker && (
+                  <div className="absolute left-0 top-full z-30 mt-1 w-52 rounded-xl border border-neutral-200 bg-white p-2 shadow-xl">
+                    <label className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-neutral-50">
+                      <input
+                        type="checkbox"
+                        checked={isMenuPlatform}
+                        onChange={() => togglePlatform("menu")}
+                      />
+                      {t.bulkPlatformMenu}
+                    </label>
+                    <div className="my-1 border-t border-neutral-100" />
+                    {(["qr", "wolt", "bolt", "glovo"] as const).map((key) => (
+                      <label
+                        key={key}
+                        className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-neutral-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={bulkPlatforms.has(key)}
+                          onChange={() => togglePlatform(key)}
+                        />
+                        {platformLabel(key)}
+                      </label>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setShowPlatformPicker(false)}
+                      className="mt-1 w-full rounded-lg bg-neutral-900 px-2 py-1 text-sm text-white"
+                    >
+                      {t.save}
+                    </button>
+                  </div>
+                )}
+              </div>
+
               <select
-                value={bulkPlatform}
-                onChange={(e) => {
-                  const next = e.target.value as typeof bulkPlatform;
-                  setBulkPlatform(next);
-                  // "Изменить на %" (adjustPricePercent) существует только для
-                  // основной цены — для площадки, где само значение уже %,
-                  // такой режим не нужен и в списке не показывается.
-                  if (next !== "menu" && bulkOp === "adjustPricePercent") setBulkOp("setPrice");
-                }}
+                value={bulkOp}
+                onChange={(e) => setBulkOp(e.target.value as typeof bulkOp)}
                 className="rounded-lg border border-neutral-300 px-2 py-1 text-sm"
               >
-                <option value="menu">{t.bulkPlatformMenu}</option>
-                <option value="qr">{t.discountMenuLabel}</option>
-                <option value="wolt">Wolt</option>
-                <option value="bolt">Bolt</option>
-                <option value="glovo">Glovo</option>
-                <option value="all">{t.bulkPlatformAll}</option>
+                <option value="setPrice">{isMenuPlatform ? t.bulkSetPrice : t.bulkSetPercent}</option>
+                <option value="adjustPriceAmount">
+                  {isMenuPlatform ? t.bulkAdjustAmount : t.bulkAdjustPercentAmount}
+                </option>
+                {isMenuPlatform && <option value="adjustPricePercent">{t.bulkAdjustPercent}</option>}
               </select>
 
-              {bulkPlatform !== "all" && (
-                <select
-                  value={bulkOp}
-                  onChange={(e) => setBulkOp(e.target.value as typeof bulkOp)}
-                  className="rounded-lg border border-neutral-300 px-2 py-1 text-sm"
-                >
-                  <option value="setPrice">{bulkPlatform === "menu" ? t.bulkSetPrice : t.bulkSetPercent}</option>
-                  <option value="adjustPriceAmount">
-                    {bulkPlatform === "menu" ? t.bulkAdjustAmount : t.bulkAdjustPercentAmount}
-                  </option>
-                  {bulkPlatform === "menu" && <option value="adjustPricePercent">{t.bulkAdjustPercent}</option>}
-                </select>
-              )}
-
-              {bulkPlatform !== "all" && bulkOp !== "setPrice" && (
+              {bulkOp !== "setPrice" && (
                 <select
                   value={bulkSign}
                   onChange={(e) => setBulkSign(e.target.value as typeof bulkSign)}
@@ -2812,31 +2876,28 @@ export function VenueEditor({
                 </select>
               )}
 
-              {bulkPlatform !== "all" && (
-                <input
-                  type="number"
-                  step="0.5"
-                  value={bulkValue}
-                  onChange={(e) => setBulkValue(e.target.value)}
-                  placeholder={bulkPlatform !== "menu" || bulkOp === "adjustPricePercent" ? "%" : "₾"}
-                  className="w-24 rounded-lg border border-neutral-300 px-2 py-1 text-sm"
-                />
-              )}
+              <input
+                type="number"
+                step="0.5"
+                value={bulkValue}
+                onChange={(e) => setBulkValue(e.target.value)}
+                placeholder={!isMenuPlatform || bulkOp === "adjustPricePercent" ? "%" : "₾"}
+                className="w-24 rounded-lg border border-neutral-300 px-2 py-1 text-sm"
+              />
 
-              {bulkPlatform !== "all" && (
-                <button
-                  onClick={applyBulkPrice}
-                  disabled={bulkStatus === "applying" || bulkStatus === "resetting" || !bulkValue}
-                  className="rounded-lg bg-neutral-900 px-3 py-1 text-sm text-white disabled:opacity-50"
-                >
-                  {bulkStatus === "applying" ? t.applying : t.applyToPrice}
-                </button>
-              )}
+              <button
+                onClick={applyBulkPrice}
+                disabled={bulkStatus === "applying" || bulkStatus === "resetting" || !bulkValue}
+                className="rounded-lg bg-neutral-900 px-3 py-1 text-sm text-white disabled:opacity-50"
+              >
+                {bulkStatus === "applying" ? t.applying : t.applyToPrice}
+              </button>
 
-              {/* Кнопка сброса цены — активна для QR-меню/Wolt/Bolt/Glovo и для
-                  "Все платформы"; обнуляет скидку (возвращает к базовой цене
-                  priceGel) на выбранной площадке(ях) для всех отмеченных позиций. */}
-              {bulkPlatform !== "menu" && (
+              {/* Кнопка сброса цены — активна для QR-меню/Wolt/Bolt/Glovo (можно
+                  отметить сразу несколько чекбоксами); обнуляет скидку
+                  (возвращает к базовой цене priceGel) на всех отмеченных
+                  площадках для всех отмеченных позиций. */}
+              {!isMenuPlatform && (
                 <button
                   type="button"
                   onClick={resetBulkPrices}
@@ -2869,18 +2930,13 @@ export function VenueEditor({
               )}
             </div>
 
-            {bulkPlatform === "all" && (
-              <p className="text-xs text-neutral-400">
-                Используй кнопку «{t.resetPrice}» справа, чтобы сбросить скидку сразу на всех площадках (QR-меню, Wolt, Bolt, Glovo) для выбранных позиций.
-              </p>
-            )}
-            {bulkPlatform !== "all" && bulkOp === "setPrice" && (
+            {bulkOp === "setPrice" && (
               <p className="text-xs text-neutral-400">{t.bulkSetPriceHelp}</p>
             )}
-            {bulkPlatform !== "all" && bulkOp === "adjustPriceAmount" && (
+            {bulkOp === "adjustPriceAmount" && (
               <p className="text-xs text-neutral-400">{t.bulkAdjustAmountHelp}</p>
             )}
-            {bulkPlatform !== "all" && bulkOp === "adjustPricePercent" && (
+            {bulkOp === "adjustPricePercent" && (
               <p className="text-xs text-neutral-400">{t.bulkAdjustPercentHelp}</p>
             )}
           </div>
