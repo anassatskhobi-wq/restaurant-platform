@@ -326,7 +326,7 @@ export function MenuView({
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-md pb-28">
+    <main className="mx-auto min-h-screen max-w-md pb-32">
       <header
         className="sticky top-0 z-10 px-5 pb-5 pt-6 text-white shadow-sm"
         style={{ backgroundColor: venue.brandColor }}
@@ -389,35 +389,87 @@ export function MenuView({
 
       <div className="px-5">
         {venue.categories.map((category) => (
-          <section key={category.slug} className="mt-6">
-            <h2 className="mb-3 text-lg font-semibold text-neutral-800">
+          <section key={category.slug} className="mt-8">
+            <h2 className="mb-3 text-xl font-bold text-neutral-800">
               {category.name[locale]}
             </h2>
-            <ul className="flex flex-col gap-3">
+            <ul className="flex flex-col gap-4">
               {category.items.map((item) => {
                 const hasModifiers = (item.modifierGroups?.length ?? 0) > 0;
                 const line = hasModifiers
                   ? null
                   : cart.find((l) => l.lineId === lineKey(item.slug, []));
                 const qty = hasModifiers ? qtyForItemSlug(item.slug) : line?.qty ?? 0;
+                // Кнопка добавления — плавающим кружком поверх фото (как в
+                // Wolt/Bolt), если фото есть; иначе — обычной строкой внизу
+                // карточки, там для неё просто нет фото, на которое можно
+                // "положить" кнопку.
+                const addControl = !item.available ? null : hasModifiers ? (
+                  <button
+                    onClick={() => setCustomizeItem(item)}
+                    aria-label={t(locale, "modifierAddToCart")}
+                    className="relative flex h-11 w-11 items-center justify-center rounded-full text-2xl font-medium text-white shadow-md"
+                    style={{ backgroundColor: venue.brandColor }}
+                  >
+                    +
+                    {qty > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-neutral-900 text-[11px] font-bold text-white">
+                        {qty}
+                      </span>
+                    )}
+                  </button>
+                ) : qty === 0 ? (
+                  <button
+                    onClick={() => addItem(item.slug)}
+                    aria-label="+"
+                    className="flex h-11 w-11 items-center justify-center rounded-full text-2xl font-medium text-white shadow-md"
+                    style={{ backgroundColor: venue.brandColor }}
+                  >
+                    +
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2 rounded-full bg-white px-1.5 py-1.5 shadow-md">
+                    <button
+                      onClick={() => line && decrementItem(line.lineId)}
+                      aria-label="-"
+                      className="flex h-8 w-8 items-center justify-center rounded-full border border-neutral-300 text-lg font-medium text-neutral-700"
+                    >
+                      −
+                    </button>
+                    <span className="w-4 text-center font-semibold">{qty}</span>
+                    <button
+                      onClick={() => addItem(item.slug)}
+                      aria-label="+"
+                      className="flex h-8 w-8 items-center justify-center rounded-full text-lg font-medium text-white"
+                      style={{ backgroundColor: venue.brandColor }}
+                    >
+                      +
+                    </button>
+                  </div>
+                );
                 return (
                   <li
                     key={item.slug}
-                    className={`overflow-hidden rounded-xl border border-neutral-200 bg-white shadow-sm ${
+                    className={`overflow-hidden rounded-2xl border border-neutral-200 bg-white shadow-sm transition-opacity ${
                       item.available ? "" : "opacity-50"
                     }`}
                   >
                     {item.photoUrl && (
-                      <img
-                        src={item.photoUrl}
-                        alt={item.name[locale]}
-                        className="h-40 w-full object-cover"
-                        loading="lazy"
-                      />
+                      <div className="relative">
+                        <img
+                          src={item.photoUrl}
+                          alt={item.name[locale]}
+                          className="aspect-[4/3] w-full object-cover"
+                          loading="lazy"
+                        />
+                        {addControl && (
+                          <div className="absolute bottom-2 right-2">{addControl}</div>
+                        )}
+                      </div>
                     )}
                     <div className="p-4">
-                      <div className="flex items-baseline justify-between gap-3">
-                        <h3 className="font-medium text-neutral-800">
+                      <div className="flex items-start justify-between gap-3">
+                        <h3 className="text-lg font-semibold leading-snug text-neutral-800">
                           {item.name[locale]}
                         </h3>
                         {item.discountMenuPercent != null ? (
@@ -425,65 +477,29 @@ export function MenuView({
                             <span className="text-xs text-neutral-400 line-through">
                               {item.priceGel} {t(locale, "currency")}
                             </span>
-                            <span className="font-semibold text-red-600">
+                            <span className="text-base font-bold text-red-600">
                               {effectivePrice(item).toFixed(2)} {t(locale, "currency")}
                             </span>
                           </span>
                         ) : (
-                          <span className="whitespace-nowrap font-semibold text-neutral-900">
+                          <span className="whitespace-nowrap text-base font-bold text-neutral-900">
                             {item.priceGel} {t(locale, "currency")}
                           </span>
                         )}
                       </div>
                       {item.description[locale] && (
-                        <p className="mt-1 text-sm text-neutral-500">
+                        <p className="mt-1 text-sm leading-snug text-neutral-500">
                           {item.description[locale]}
                         </p>
                       )}
-                      {!item.available ? (
+                      {!item.available && (
                         <p className="mt-2 text-xs font-medium text-red-500">
                           {t(locale, "outOfStock")}
                         </p>
-                      ) : hasModifiers ? (
-                        <div className="mt-3 flex items-center justify-end gap-3">
-                          {qty > 0 && (
-                            <span className="text-sm font-medium text-neutral-500">
-                              {qty}
-                            </span>
-                          )}
-                          <button
-                            onClick={() => setCustomizeItem(item)}
-                            className="rounded-full px-4 py-2 text-sm font-medium text-white"
-                            style={{ backgroundColor: venue.brandColor }}
-                          >
-                            {t(locale, "modifierAddToCart")}
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="mt-3 flex items-center justify-end gap-3">
-                          {qty > 0 && (
-                            <>
-                              <button
-                                onClick={() => line && decrementItem(line.lineId)}
-                                aria-label="-"
-                                className="flex h-8 w-8 items-center justify-center rounded-full border border-neutral-300 text-lg font-medium text-neutral-700"
-                              >
-                                −
-                              </button>
-                              <span className="w-4 text-center font-medium">
-                                {qty}
-                              </span>
-                            </>
-                          )}
-                          <button
-                            onClick={() => addItem(item.slug)}
-                            aria-label="+"
-                            className="flex h-8 w-8 items-center justify-center rounded-full text-lg font-medium text-white"
-                            style={{ backgroundColor: venue.brandColor }}
-                          >
-                            +
-                          </button>
-                        </div>
+                      )}
+                      {/* Без фото кнопке негде "лежать" сверху — показываем её обычной строкой здесь */}
+                      {!item.photoUrl && addControl && (
+                        <div className="mt-3 flex justify-end">{addControl}</div>
                       )}
                     </div>
                   </li>
@@ -497,8 +513,14 @@ export function MenuView({
       {totalCount > 0 && !drawerOpen && (
         <button
           onClick={() => setDrawerOpen(true)}
-          className="fixed inset-x-5 bottom-5 z-20 flex items-center justify-between rounded-full px-5 py-3 text-white shadow-lg"
-          style={{ backgroundColor: venue.brandColor }}
+          className="fixed inset-x-5 z-20 flex items-center justify-between rounded-full px-5 py-3 text-white shadow-lg"
+          style={{
+            backgroundColor: venue.brandColor,
+            // На iPhone с "чёлкой"/полоской снизу отступ от края экрана
+            // считаем через safe-area-inset, чтобы кнопка не пряталась под
+            // системной полосой свайпа.
+            bottom: "max(1.25rem, calc(env(safe-area-inset-bottom) + 0.75rem))",
+          }}
         >
           <span className="font-medium">
             {t(locale, "cart")} · {totalCount}
