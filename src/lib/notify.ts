@@ -100,3 +100,20 @@ export function formatWaiterCall(params: {
   const reason = WAITER_REASON_RU[params.reason] ?? esc(params.reason);
   return `🛎️ <b>${esc(params.venueName)} — официант</b> · ${esc(params.tableLabel)}\nПричина: ${reason}`;
 }
+
+// Сообщение о низкой оценке заказа (1–3 звезды). Отправляется только при
+// такой оценке — хорошие отзывы уходят гостем в Google и в Telegram не
+// дублируются.
+export function formatFeedback(params: {
+  venueName: string;
+  orderNumber: number | null;
+  tableLabel: string | null;
+  rating: number;
+  comment: string;
+}): string {
+  const stars = "★".repeat(params.rating) + "☆".repeat(Math.max(0, 5 - params.rating));
+  const where = params.tableLabel ? ` · ${esc(params.tableLabel)}` : "";
+  const order = params.orderNumber != null ? ` — заказ №${params.orderNumber}` : "";
+  const commentLine = params.comment.trim() ? `\n«${esc(params.comment.trim())}»` : "";
+  return `⚠️ <b>${esc(params.venueName)}${order}</b>${where}\nОценка: ${stars} (${params.rating}/5)${commentLine}`;
+}

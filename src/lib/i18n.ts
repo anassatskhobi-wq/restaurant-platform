@@ -58,6 +58,12 @@ const dictionary = {
     modifierTotalPrice: "ჯამი",
     modifierChooseOne: "აირჩიეთ ერთი",
     modifierChooseUpTo: "აირჩიეთ მაქს.",
+    rateOrderTitle: "შეაფასეთ შეკვეთა",
+    rateThanks: "გმადლობთ შეფასებისთვის!",
+    rateWhatWrong: "რა არ იყო რიგზე?",
+    rateCommentPlaceholder: "მოგვწერეთ — გავარკვევთ",
+    rateSend: "გაგზავნა",
+    rateSent: "გმადლობთ, თქვენი გამოხმაურება მივიღეთ",
   },
   ru: {
     menu: "Меню",
@@ -105,6 +111,12 @@ const dictionary = {
     modifierTotalPrice: "Итого",
     modifierChooseOne: "Выберите один",
     modifierChooseUpTo: "Выберите до",
+    rateOrderTitle: "Оцените заказ",
+    rateThanks: "Спасибо за оценку!",
+    rateWhatWrong: "Что было не так?",
+    rateCommentPlaceholder: "Расскажите — мы разберёмся",
+    rateSend: "Отправить",
+    rateSent: "Спасибо, мы получили ваш отзыв",
   },
   en: {
     menu: "Menu",
@@ -152,6 +164,12 @@ const dictionary = {
     modifierTotalPrice: "Total",
     modifierChooseOne: "Choose one",
     modifierChooseUpTo: "Choose up to",
+    rateOrderTitle: "Rate your order",
+    rateThanks: "Thanks for rating!",
+    rateWhatWrong: "What went wrong?",
+    rateCommentPlaceholder: "Tell us — we'll look into it",
+    rateSend: "Send",
+    rateSent: "Thanks, we got your feedback",
   },
 } satisfies Record<Locale, Record<string, string>>;
 
