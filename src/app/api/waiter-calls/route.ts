@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { rateLimit, clientIp } from "@/lib/rateLimit";
+import { sendTelegram, formatWaiterCall } from "@/lib/notify";
 
 // POST /api/waiter-calls — публичный (без авторизации) эндпоинт: гость на
 // странице меню, открытой по QR конкретного столика (?table=...), нажимает
@@ -30,7 +31,7 @@ export async function POST(request: Request) {
 
   const table = await prisma.table.findUnique({
     where: { id: body.tableId },
-    select: { id: true, venueId: true },
+    select: { id: true, venueId: true, label: true, venue: { select: { nameRu: true } } },
   });
   if (!table) {
     return NextResponse.json({ error: "table not found" }, { status: 404 });
@@ -43,6 +44,12 @@ export async function POST(request: Request) {
       reason,
     },
   });
+
+  // Уведомление персонала в Telegram (см. src/lib/notify.ts) — не влияет
+  // на ответ гостю, сама отправка ограничена по времени и глушит ошибки.
+  await sendTelegram(
+    formatWaiterCall({ venueName: table.venue.nameRu, tableLabel: table.label, reason })
+  );
 
   return NextResponse.json({ id: call.id, status: call.status });
 }

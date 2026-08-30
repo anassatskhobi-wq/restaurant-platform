@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { rateLimit, clientIp } from "@/lib/rateLimit";
+import { sendTelegram, formatNewOrder } from "@/lib/notify";
 
 // STEP 2 — реальные заказы: сохраняем в Postgres через Prisma вместо
 // STEP 0/1 заглушки (раньше номер был Math.random() и никуда не писался).
@@ -71,7 +72,7 @@ export async function POST(request: Request) {
 
   const venue = await prisma.venue.findUnique({
     where: { slug: body.venueSlug },
-    select: { id: true },
+    select: { id: true, nameRu: true },
   });
   if (!venue) {
     return NextResponse.json({ error: "venue not found" }, { status: 404 });
@@ -80,15 +81,17 @@ export async function POST(request: Request) {
   // Столик — если ссылка была открыта по QR конкретного стола (?table=...),
   // проверяем, что этот стол правда принадлежит этой точке (не чужой id).
   let tableId: string | null = null;
+  let tableLabel: string | null = null;
   if (requestedTableId) {
     const table = await prisma.table.findFirst({
       where: { id: requestedTableId, venueId: venue.id },
-      select: { id: true },
+      select: { id: true, label: true },
     });
     if (!table) {
       return NextResponse.json({ error: "table not found" }, { status: 400 });
     }
     tableId = table.id;
+    tableLabel = table.label;
   }
 
   // Группируем строки корзины по (slug + набор опций) — на случай если
@@ -190,9 +193,10 @@ export async function POST(request: Request) {
   // платформу). Присваивается внутри транзакции; на случай гонки двух
   // одновременных заказов на одну точку — пара повторных попыток при
   // конфликте уникальности [venueId, orderNumber].
+  let created: { id: string; orderNumber: number } | null = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const order = await prisma.$transaction(async (tx) => {
+      created = await prisma.$transaction(async (tx) => {
         const last = await tx.order.findFirst({
           where: { venueId: venue.id },
           orderBy: { orderNumber: "desc" },
@@ -208,13 +212,10 @@ export async function POST(request: Request) {
             totalGel,
             items: { create: lines },
           },
+          select: { id: true, orderNumber: true },
         });
       });
-      return NextResponse.json({
-        id: order.id,
-        orderNumber: String(order.orderNumber),
-        status: "received",
-      });
+      break;
     } catch (err) {
       const isUniqueConflict = (err as { code?: string } | null)?.code === "P2002";
       if (isUniqueConflict && attempt < 2) continue;
@@ -225,10 +226,36 @@ export async function POST(request: Request) {
       );
     }
   }
-  // Недостижимо — цикл выше всегда возвращает результат, но TypeScript
-  // требует явный return на случай, если бы это было не так.
-  return NextResponse.json(
-    { error: "Не удалось сохранить заказ, попробуйте ещё раз." },
-    { status: 500 }
+  if (!created) {
+    return NextResponse.json(
+      { error: "Не удалось сохранить заказ, попробуйте ещё раз." },
+      { status: 500 }
+    );
+  }
+
+  // Уведомление персонала в Telegram (см. src/lib/notify.ts). Заказ уже
+  // сохранён — отправка сама ограничивает себя 4 секундами и глушит
+  // любые ошибки, так что сбой Telegram не влияет на ответ гостю.
+  await sendTelegram(
+    formatNewOrder({
+      venueName: venue.nameRu,
+      orderNumber: created.orderNumber,
+      tableLabel,
+      totalGel,
+      lines: lines.map((l) => ({
+        nameSnapshot: l.nameSnapshot,
+        priceGel: l.priceGel,
+        qty: l.qty,
+        modifiers: Array.isArray(l.modifiersSnapshot)
+          ? (l.modifiersSnapshot as { optionName: string }[])
+          : [],
+      })),
+    })
   );
+
+  return NextResponse.json({
+    id: created.id,
+    orderNumber: String(created.orderNumber),
+    status: "received",
+  });
 }
