@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu } from "@/lib/admin/auth";
 
 // Бесплатный ИИ-помощник в админке: понимает свободный текст оператора
 // ("отключи кока-колу", "сколько у нас блюд", "добавь блюдо Хачапури за
@@ -40,6 +40,11 @@ const DISCOUNT_FIELD: Record<string, "discountWoltPercent" | "discountBoltPercen
 export async function POST(request: Request) {
   const staff = await getStaffContext();
   if (!staff) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  // ИИ-помощник умеет менять цены, состав, добавлять/удалять позиции —
+  // это редактирование меню, роли OPERATOR недоступно.
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет пользоваться ИИ-помощником." }, { status: 403 });
+  }
 
   const body = await request.json().catch(() => null);
   if (!body?.venueId || !body?.message) {

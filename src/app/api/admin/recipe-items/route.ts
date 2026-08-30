@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu } from "@/lib/admin/auth";
 
 export async function POST(request: Request) {
   const staff = await getStaffContext();
@@ -27,6 +27,9 @@ export async function POST(request: Request) {
   }
   if (ingredient.venueId !== item.category.venueId) {
     return NextResponse.json({ error: "ingredient belongs to a different venue" }, { status: 400 });
+  }
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет менять состав блюд." }, { status: 403 });
   }
 
   const existingCount = await prisma.recipeItem.count({ where: { menuItemId: body.menuItemId } });

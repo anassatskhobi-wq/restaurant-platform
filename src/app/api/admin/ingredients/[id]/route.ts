@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu, isAvailabilityOnlyPatch } from "@/lib/admin/auth";
 
 async function loadIngredientWithVenue(id: string) {
   return prisma.ingredient.findUnique({ where: { id }, include: { venue: true } });
@@ -23,6 +23,15 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
   const body = await request.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "invalid body" }, { status: 400 });
+
+  // OPERATOR может здесь только включать/выключать ингредиент (тело строго
+  // { available: boolean }). Цена, единица, названия — только OWNER/STAFF.
+  if (!canEditMenu(staff) && !isAvailabilityOnlyPatch(body)) {
+    return NextResponse.json(
+      { error: "Ваша роль позволяет только менять наличие ингредиента." },
+      { status: 403 }
+    );
+  }
 
   try {
     const updated = await prisma.ingredient.update({
@@ -59,6 +68,9 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
   if (!ingredient) return NextResponse.json({ ok: true });
   if (!canEditVenue(staff, ingredient.venue)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет удалять ингредиенты." }, { status: 403 });
   }
 
   // Строки состава блюд, где использовался этот ингредиент, удаляются
