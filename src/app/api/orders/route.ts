@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
+import { rateLimit, clientIp } from "@/lib/rateLimit";
 
 // STEP 2 — реальные заказы: сохраняем в Postgres через Prisma вместо
 // STEP 0/1 заглушки (раньше номер был Math.random() и никуда не писался).
@@ -50,6 +51,23 @@ export async function POST(request: Request) {
   }
   const locale = ["ka", "ru", "en"].includes(body.locale) ? body.locale : "ka";
   const requestedTableId = typeof body.tableId === "string" ? body.tableId : null;
+
+  // Защита от накрутки: эндпоинт публичный (см. src/lib/rateLimit.ts).
+  // Строгий лимит на один стол (5 заказов в минуту — реальному столу
+  // столько не нужно) и мягкий на один IP (25 за 2 минуты — на случай
+  // общего Wi-Fi заведения, где за одним адресом много гостей).
+  const ip = clientIp(request);
+  const ipLimit = rateLimit(`order:ip:${ip}`, { limit: 25, windowMs: 120_000 });
+  const tableLimit = requestedTableId
+    ? rateLimit(`order:table:${requestedTableId}`, { limit: 5, windowMs: 60_000 })
+    : { ok: true, retryAfterSec: 0 };
+  if (!ipLimit.ok || !tableLimit.ok) {
+    const retryAfter = Math.max(ipLimit.retryAfterSec, tableLimit.retryAfterSec);
+    return NextResponse.json(
+      { error: "Слишком много заказов подряд. Подождите немного и попробуйте снова." },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } }
+    );
+  }
 
   const venue = await prisma.venue.findUnique({
     where: { slug: body.venueSlug },
