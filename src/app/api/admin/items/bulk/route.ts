@@ -18,7 +18,12 @@ type BulkAction =
   | { action: "setPrice"; value: number }
   | { action: "adjustPriceAmount"; value: number }
   | { action: "adjustPricePercent"; value: number }
-  | { action: "setAvailable"; value: boolean };
+  | { action: "setAvailable"; value: boolean }
+  // Сброс скидки/наценки на площадке(ях) — ставит discount*Percent в null
+  // (возвращает к базовой цене priceGel) для ВСЕХ переданных itemIds ОДНИМ
+  // запросом к базе (updateMany), вместо обновления позиций по одной —
+  // так сброс сотен позиций занимает доли секунды, а не минуты.
+  | { action: "resetDiscount" };
 
 export async function POST(request: Request) {
   const staff = await getStaffContext();
@@ -30,7 +35,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "itemIds is required" }, { status: 400 });
   }
   const op = body as BulkAction;
-  if (!["setPrice", "adjustPriceAmount", "adjustPricePercent", "setAvailable"].includes(op.action)) {
+  if (
+    !["setPrice", "adjustPriceAmount", "adjustPricePercent", "setAvailable", "resetDiscount"].includes(
+      op.action
+    )
+  ) {
     return NextResponse.json({ error: "unknown action" }, { status: 400 });
   }
   // platform: "menu" (базовая цена, одна везде) или "qr"/Wolt/Bolt/Glovo —
@@ -53,6 +62,23 @@ export async function POST(request: Request) {
     if (!canEditVenue(staff, item.category.venue)) {
       return NextResponse.json({ error: "forbidden" }, { status: 403 });
     }
+  }
+
+  // Сброс скидки — отдельная быстрая ветка: ОДИН updateMany на все
+  // itemIds разом, без транзакции из N update-ов и без построчной логики.
+  if (op.action === "resetDiscount") {
+    if (platform === "menu") {
+      return NextResponse.json(
+        { error: "resetDiscount is not applicable to platform 'menu'" },
+        { status: 400 }
+      );
+    }
+    const field = DISCOUNT_FIELD[platform];
+    await prisma.menuItem.updateMany({
+      where: { id: { in: itemIds as string[] } },
+      data: { [field]: null },
+    });
+    return NextResponse.json({ ok: true, count: itemIds.length });
   }
 
   const updated = await prisma.$transaction(

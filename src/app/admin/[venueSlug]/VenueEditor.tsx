@@ -845,20 +845,36 @@ export function VenueEditor({
   // или сразу несколько — QR-меню/Wolt/Bolt/Glovo) для всех отмеченных
   // позиций. Обнуляет discount*Percent (возвращает к базовой цене
   // priceGel), не трогая саму базовую цену.
+  // Сброс цены (скидки) на всех отмеченных площадках (может быть одна
+  // или сразу несколько — QR-меню/Wolt/Bolt/Glovo) для всех отмеченных
+  // позиций. Один быстрый запрос на КАЖДУЮ ПЛОЩАДКУ (не на каждую
+  // позицию!) — сервер обнуляет discount*Percent сразу для всех itemIds
+  // одним запросом к базе (см. action "resetDiscount" в /api/admin/items/bulk).
   async function resetBulkPrices() {
     if (selected.size === 0 || isMenuPlatform || selectedNonMenuPlatforms.length === 0) return;
-    const fields = selectedNonMenuPlatforms.map((p) => PLATFORM_DISCOUNT_FIELDS[p]);
     setBulkStatus("resetting");
     try {
+      const itemIds = Array.from(selected);
+      for (const platform of selectedNonMenuPlatforms) {
+        const res = await fetch("/api/admin/items/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ itemIds, action: "resetDiscount", platform }),
+        });
+        if (!res.ok) throw new Error();
+      }
+      // Сервер не возвращает обновлённые позиции для resetDiscount (нет
+      // смысла — известно, что все стали null), поэтому обновляем экран
+      // локально сразу после успеха всех запросов.
+      const fields = selectedNonMenuPlatforms.map((p) => PLATFORM_DISCOUNT_FIELDS[p]);
       const itemsToReset = allItemsFlat.filter((i) => selected.has(i.id));
       for (const item of itemsToReset) {
         const patch: Partial<Item> = {};
         fields.forEach((f) => {
           (patch as any)[f] = null;
         });
-        const cat = venue.categories.find((c) => c.items.some((i) => i.id === item.id));
+        const cat = venue.categories.find((c) => c.items.some((it) => it.id === item.id));
         if (cat) updateItem(cat.id, item.id, patch);
-        await saveItem({ ...item, ...patch });
       }
       setBulkStatus(null);
     } catch {
