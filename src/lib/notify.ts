@@ -18,6 +18,42 @@
 
 const TG_API = "https://api.telegram.org";
 
+// Инлайн-клавиатура Telegram (кнопки прямо под сообщением).
+export type InlineKeyboard = {
+  inline_keyboard: { text: string; callback_data: string }[][];
+};
+
+// Человеческие названия статусов заказа для сообщений.
+const STATUS_RU: Record<string, string> = {
+  NEW: "Принят",
+  IN_PROGRESS: "Готовим",
+  READY: "Готов",
+  DONE: "Выдан",
+  CANCELLED: "Отменён",
+};
+
+export function statusLabelRu(status: string): string {
+  return STATUS_RU[status] ?? status;
+}
+
+// Кнопки под сообщением о заказе: одно нажатие меняет Order.status.
+// callback_data = "o:<orderId>:<STATUS>" (лимит Telegram — 64 байта,
+// cuid ~25 символов, укладываемся).
+export function orderStatusButtons(orderId: string): InlineKeyboard {
+  return {
+    inline_keyboard: [
+      [
+        { text: "👨‍🍳 Готовим", callback_data: `o:${orderId}:IN_PROGRESS` },
+        { text: "🔔 Готов", callback_data: `o:${orderId}:READY` },
+        { text: "✅ Выдан", callback_data: `o:${orderId}:DONE` },
+      ],
+    ],
+  };
+}
+
+// Пустая клавиатура — чтобы убрать кнопки у сообщения (заказ выдан).
+const NO_KEYBOARD: InlineKeyboard = { inline_keyboard: [] };
+
 // Экранируем то, что подставляем в HTML-разметку сообщения Telegram
 // (названия блюд, метки столов вводит человек — там может быть < > &).
 function esc(s: string): string {
@@ -26,7 +62,10 @@ function esc(s: string): string {
 
 // Отправка одного сообщения. Никогда не бросает исключение и не «висит»
 // дольше 4 секунд — сбой Telegram не должен ронять оформление заказа.
-export async function sendTelegram(text: string): Promise<void> {
+export async function sendTelegram(
+  text: string,
+  replyMarkup?: InlineKeyboard
+): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chatId) return; // не настроено — тихо выходим
@@ -42,6 +81,7 @@ export async function sendTelegram(text: string): Promise<void> {
         text,
         parse_mode: "HTML",
         disable_web_page_preview: true,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
       }),
       signal: controller.signal,
     });
@@ -51,6 +91,67 @@ export async function sendTelegram(text: string): Promise<void> {
     }
   } catch (err) {
     console.error("[notify] не удалось отправить в Telegram:", err);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Ответ на нажатие инлайн-кнопки — обязателен, иначе у нажавшего
+// кнопка «крутится» ~10 секунд. text показывается ему всплывашкой.
+export async function answerCallbackQuery(
+  callbackQueryId: string,
+  text: string
+): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    await fetch(`${TG_API}/bot${token}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    console.error("[notify] answerCallbackQuery:", err);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Перерисовать уже отправленное сообщение (после смены статуса кнопкой).
+// Если replyMarkup не передан — кнопки убираются совсем.
+export async function editTelegramMessage(
+  chatId: number | string,
+  messageId: number,
+  text: string,
+  replyMarkup?: InlineKeyboard
+): Promise<void> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const res = await fetch(`${TG_API}/bot${token}/editMessageText`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        reply_markup: replyMarkup ?? NO_KEYBOARD,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.error("[notify] editMessageText ошибка:", res.status, body.slice(0, 300));
+    }
+  } catch (err) {
+    console.error("[notify] editMessageText:", err);
   } finally {
     clearTimeout(timeout);
   }
@@ -70,6 +171,9 @@ export function formatNewOrder(params: {
   tableLabel: string | null;
   totalGel: number;
   lines: OrderLineForNotify[];
+  // Строка о текущем статусе, напр. "Готовим · Анна 14:32". Появляется
+  // после того, как по заказу нажали кнопку.
+  statusNote?: string | null;
 }): string {
   const where = params.tableLabel ? esc(params.tableLabel) : "без стола";
   const head = `🆕 <b>${esc(params.venueName)} — заказ №${params.orderNumber}</b> · ${where}`;
@@ -81,7 +185,10 @@ export function formatNewOrder(params: {
       return `• ${esc(l.nameSnapshot)}${mods} × ${l.qty} — ${(l.priceGel * l.qty).toFixed(2)} ₾`;
     })
     .join("\n");
-  return `${head}\n${items}\n────────\nИтого: <b>${params.totalGel.toFixed(2)} ₾</b>`;
+  const footer = params.statusNote
+    ? `\n<b>▶ ${esc(params.statusNote)}</b>`
+    : "";
+  return `${head}\n${items}\n────────\nИтого: <b>${params.totalGel.toFixed(2)} ₾</b>${footer}`;
 }
 
 const WAITER_REASON_RU: Record<string, string> = {
