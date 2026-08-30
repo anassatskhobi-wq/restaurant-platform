@@ -69,6 +69,7 @@ model Venue {
   // предлагается оставить отзыв по этой ссылке.
   urlGoogleReview String?
   waiterCalls  WaiterCall[]
+  feedback     Feedback[]
   // Свободный текст про бренд/точку (когда и где создан бренд, когда и
   // где открылись, история и т.п.) — заполняется вручную оператором,
   // ИИ-помощник читает это, чтобы отвечать на вопросы про историю заведения.
@@ -226,10 +227,30 @@ model Order {
   table       Table?      @relation(fields: [tableId], references: [id])
   totalGel    Decimal
   items       OrderItem[]
+  feedback    Feedback?
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   @@unique([venueId, orderNumber])
+}
+
+// Оценка заказа гостем после выдачи (экран "заказ выдан" на странице
+// меню). Гость ставит 1–5 звёзд:
+//   4–5 → предлагаем оставить отзыв в Google (наружу);
+//   1–3 → просим написать, что не так — это остаётся ВНУТРИ: сообщение
+//         персоналу в Telegram + список в админке, в Google не выносится.
+// Одна оценка на заказ (orderId уникален) — повторная отправка обновляет
+// существующую строку, а не плодит новые.
+model Feedback {
+  id        String   @id @default(cuid())
+  venueId   String
+  venue     Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  orderId   String?  @unique
+  order     Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  rating    Int      // 1..5
+  comment   String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Снимок блюда на момент заказа: имя и цена сохраняются такими, какими

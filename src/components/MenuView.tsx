@@ -74,6 +74,13 @@ export function MenuView({
   const [orderState, setOrderState] = useState<OrderState>({ status: "idle" });
   const [liveStatus, setLiveStatus] = useState<string | null>(null);
   const [reviewDismissed, setReviewDismissed] = useState(false);
+  // Оценка заказа после выдачи: сначала звёзды, потом (при 1–3) поле
+  // "что не так", потом "спасибо". 4–5 ведёт сразу на "done" с кнопкой
+  // отзыва в Google, 1–3 — на экран комментария, который остаётся внутри.
+  const [rating, setRating] = useState<number | null>(null);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackPhase, setFeedbackPhase] = useState<"stars" | "comment" | "done">("stars");
+  const [feedbackSending, setFeedbackSending] = useState(false);
   const [customizeItem, setCustomizeItem] = useState<MenuItemT | null>(null);
   const [lastOrder, setLastOrder] = useState<{ id: string; orderNumber: string } | null>(null);
   const [lastOrderDismissed, setLastOrderDismissed] = useState(false);
@@ -257,6 +264,7 @@ export function MenuView({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "failed");
       setReviewDismissed(false);
+      resetFeedback();
       setOrderState({ status: "placed", id: data.id, orderNumber: String(data.orderNumber) });
       setCart([]);
     } catch {
@@ -267,6 +275,43 @@ export function MenuView({
   function startNewOrder() {
     setOrderState({ status: "idle" });
     setDrawerOpen(false);
+  }
+
+  function resetFeedback() {
+    setRating(null);
+    setFeedbackComment("");
+    setFeedbackPhase("stars");
+  }
+
+  // Оценка уходит на сервер сразу при выборе звёзд (чтобы не потерять её,
+  // если гость закроет страницу до комментария), и ещё раз — когда
+  // дописан комментарий. Сбой отправки не должен «застревать» на экране.
+  async function submitFeedback(stars: number, comment: string) {
+    const orderId = orderState.status === "placed" ? orderState.id : null;
+    if (!orderId) return;
+    setFeedbackSending(true);
+    try {
+      await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId, rating: stars, comment }),
+      });
+    } catch {
+      // не критично — просто идём дальше
+    }
+    setFeedbackSending(false);
+  }
+
+  function pickRating(stars: number) {
+    setRating(stars);
+    submitFeedback(stars, "");
+    setFeedbackPhase(stars >= 4 ? "done" : "comment");
+  }
+
+  async function sendFeedbackComment() {
+    if (rating == null) return;
+    await submitFeedback(rating, feedbackComment.trim());
+    setFeedbackPhase("done");
   }
 
   async function callWaiter(reason: string) {
@@ -668,31 +713,86 @@ export function MenuView({
                   {t(locale, "orderStatusLabel")}: {statusLabel(locale, liveStatus ?? "NEW")}
                 </span>
 
-                {liveStatus === "DONE" && venue.urlGoogleReview && !reviewDismissed && (
+                {liveStatus === "DONE" && !reviewDismissed && (
                   <div className="mt-3 w-full rounded-xl border border-neutral-200 bg-neutral-50 p-4">
-                    <p className="font-medium text-neutral-800">
-                      {t(locale, "reviewPromptTitle")}
-                    </p>
-                    <p className="mt-1 text-sm text-neutral-500">
-                      {t(locale, "reviewPromptBody")}
-                    </p>
-                    <div className="mt-3 flex justify-center gap-2">
-                      <a
-                        href={venue.urlGoogleReview}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="rounded-full px-4 py-2 text-sm font-medium text-white"
-                        style={{ backgroundColor: venue.brandColor }}
-                      >
-                        {t(locale, "reviewPromptCta")}
-                      </a>
-                      <button
-                        onClick={() => setReviewDismissed(true)}
-                        className="rounded-full border border-neutral-300 px-4 py-2 text-sm text-neutral-600"
-                      >
-                        {t(locale, "reviewPromptDismiss")}
-                      </button>
-                    </div>
+                    {feedbackPhase === "stars" && (
+                      <>
+                        <p className="font-medium text-neutral-800">
+                          {t(locale, "rateOrderTitle")}
+                        </p>
+                        <div className="mt-3 flex justify-center gap-1">
+                          {[1, 2, 3, 4, 5].map((n) => (
+                            <button
+                              key={n}
+                              onClick={() => pickRating(n)}
+                              disabled={feedbackSending}
+                              aria-label={String(n)}
+                              className="text-3xl leading-none text-amber-400 disabled:opacity-50"
+                            >
+                              {rating != null && n <= rating ? "★" : "☆"}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    {feedbackPhase === "comment" && (
+                      <>
+                        <p className="font-medium text-neutral-800">
+                          {t(locale, "rateWhatWrong")}
+                        </p>
+                        <textarea
+                          value={feedbackComment}
+                          onChange={(e) => setFeedbackComment(e.target.value)}
+                          placeholder={t(locale, "rateCommentPlaceholder")}
+                          rows={3}
+                          className="mt-2 w-full resize-none rounded-lg border border-neutral-300 px-3 py-2 text-sm"
+                        />
+                        <button
+                          onClick={sendFeedbackComment}
+                          disabled={feedbackSending}
+                          className="mt-2 w-full rounded-full py-2 text-sm font-medium text-white disabled:opacity-50"
+                          style={{ backgroundColor: venue.brandColor }}
+                        >
+                          {t(locale, "rateSend")}
+                        </button>
+                      </>
+                    )}
+
+                    {feedbackPhase === "done" && (
+                      <>
+                        <p className="font-medium text-neutral-800">
+                          {rating != null && rating >= 4
+                            ? t(locale, "rateThanks")
+                            : t(locale, "rateSent")}
+                        </p>
+                        {rating != null && rating >= 4 && venue.urlGoogleReview && (
+                          <>
+                            <p className="mt-1 text-sm text-neutral-500">
+                              {t(locale, "reviewPromptBody")}
+                            </p>
+                            <div className="mt-3 flex justify-center">
+                              <a
+                                href={venue.urlGoogleReview}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="rounded-full px-4 py-2 text-sm font-medium text-white"
+                                style={{ backgroundColor: venue.brandColor }}
+                              >
+                                {t(locale, "reviewPromptCta")}
+                              </a>
+                            </div>
+                          </>
+                        )}
+                      </>
+                    )}
+
+                    <button
+                      onClick={() => setReviewDismissed(true)}
+                      className="mt-3 block w-full text-center text-xs text-neutral-400"
+                    >
+                      {t(locale, "reviewPromptDismiss")}
+                    </button>
                   </div>
                 )}
 
