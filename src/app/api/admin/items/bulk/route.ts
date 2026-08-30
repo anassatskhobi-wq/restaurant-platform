@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
 
@@ -19,10 +20,8 @@ type BulkAction =
   | { action: "adjustPriceAmount"; value: number }
   | { action: "adjustPricePercent"; value: number }
   | { action: "setAvailable"; value: boolean }
-  // Сброс скидки/наценки на площадке(ях) — ставит discount*Percent в null
-  // (возвращает к базовой цене priceGel) для ВСЕХ переданных itemIds ОДНИМ
-  // запросом к базе (updateMany), вместо обновления позиций по одной —
-  // так сброс сотен позиций занимает доли секунды, а не минуты.
+  // Сброс скидки/наценки на площадке — ставит discount*Percent в null
+  // (возвращает к базовой цене priceGel).
   | { action: "resetDiscount" };
 
 export async function POST(request: Request) {
@@ -44,18 +43,20 @@ export async function POST(request: Request) {
   }
   // platform: "menu" (базовая цена, одна везде) или "qr"/Wolt/Bolt/Glovo —
   // тогда действие применяется не к priceGel, а к его скидке/наценке (%)
-  // для этой площадки (discountMenuPercent/discountWoltPercent/discountBoltPercent/discountGlovoPercent).
-  // Отсутствие поля = "menu", для обратной совместимости со старыми вызовами.
+  // для этой площадки. Отсутствие поля = "menu", для обратной
+  // совместимости со старыми вызовами.
   const platform: Platform = ["qr", "wolt", "bolt", "glovo"].includes(body?.platform)
     ? body.platform
     : "menu";
 
+  const ids = itemIds as string[];
+
   const items = await prisma.menuItem.findMany({
-    where: { id: { in: itemIds as string[] } },
+    where: { id: { in: ids } },
     include: { category: { include: { venue: true } } },
   });
 
-  if (items.length !== itemIds.length) {
+  if (items.length !== ids.length) {
     return NextResponse.json({ error: "some items not found" }, { status: 404 });
   }
   for (const item of items) {
@@ -64,9 +65,17 @@ export async function POST(request: Request) {
     }
   }
 
-  // Сброс скидки — отдельная быстрая ветка: ОДИН updateMany на все
-  // itemIds разом, без транзакции из N update-ов и без построчной логики.
-  if (op.action === "resetDiscount") {
+  // Все ветки ниже — ОДИН запрос к базе на все itemIds разом (updateMany
+  // для статичных значений, единый SQL UPDATE с вычислением на стороне
+  // базы для "прибавить/умножить"), вместо обновления по одной позиции —
+  // так операция над сотнями позиций занимает доли секунды, а не минуты.
+
+  if (op.action === "setAvailable") {
+    await prisma.menuItem.updateMany({
+      where: { id: { in: ids } },
+      data: { available: op.value },
+    });
+  } else if (op.action === "resetDiscount") {
     if (platform === "menu") {
       return NextResponse.json(
         { error: "resetDiscount is not applicable to platform 'menu'" },
@@ -75,53 +84,69 @@ export async function POST(request: Request) {
     }
     const field = DISCOUNT_FIELD[platform];
     await prisma.menuItem.updateMany({
-      where: { id: { in: itemIds as string[] } },
+      where: { id: { in: ids } },
       data: { [field]: null },
     });
-    return NextResponse.json({ ok: true, count: itemIds.length });
-  }
-
-  const updated = await prisma.$transaction(
-    items.map((item) => {
-      if (op.action === "setAvailable") {
-        return prisma.menuItem.update({
-          where: { id: item.id },
-          data: { available: op.value },
-        });
-      }
-
-      if (platform === "menu") {
-        const current = Number(item.priceGel);
-        let nextPrice = current;
-        if (op.action === "setPrice") nextPrice = op.value;
-        if (op.action === "adjustPriceAmount") nextPrice = current + op.value;
-        if (op.action === "adjustPricePercent") nextPrice = current * (1 + op.value / 100);
-        nextPrice = Math.max(0, Math.round(nextPrice * 100) / 100);
-
-        return prisma.menuItem.update({
-          where: { id: item.id },
-          data: { priceGel: nextPrice },
-        });
-      }
-
-      // Скидка/наценка (%) для конкретной площадки. Значение может быть
-      // отрицательным — это осознанно: наценка на площадке (цена там
-      // выше основной), не только скидка (цена ниже).
+  } else if (op.action === "setPrice") {
+    // Одно и то же значение для всех выбранных позиций — updateMany.
+    if (platform === "menu") {
+      const nextPrice = Math.max(0, Math.round(op.value * 100) / 100);
+      await prisma.menuItem.updateMany({
+        where: { id: { in: ids } },
+        data: { priceGel: nextPrice },
+      });
+    } else {
       const field = DISCOUNT_FIELD[platform];
-      const currentRaw = item[field];
-      const current = currentRaw != null ? Number(currentRaw) : 0;
-      let nextPercent = current;
-      if (op.action === "setPrice") nextPercent = op.value;
-      if (op.action === "adjustPriceAmount") nextPercent = current + op.value;
-      if (op.action === "adjustPricePercent") nextPercent = current * (1 + op.value / 100);
-      nextPercent = Math.round(nextPercent * 100) / 100;
-
-      return prisma.menuItem.update({
-        where: { id: item.id },
+      const nextPercent = Math.round(op.value * 100) / 100;
+      await prisma.menuItem.updateMany({
+        where: { id: { in: ids } },
         data: { [field]: nextPercent },
       });
-    })
-  );
+    }
+  } else {
+    // adjustPriceAmount / adjustPricePercent — новое значение зависит от
+    // ТЕКУЩЕГО значения каждой позиции, поэтому updateMany (статичное
+    // значение) не подходит; вместо этого один SQL UPDATE, где новое
+    // значение считается прямо в базе на основе старого — тоже один
+    // запрос, а не N.
+    const idsSql = Prisma.join(ids);
+    if (platform === "menu") {
+      if (op.action === "adjustPriceAmount") {
+        await prisma.$executeRaw`
+          UPDATE "MenuItem"
+          SET "priceGel" = GREATEST(0, ROUND(("priceGel" + ${op.value})::numeric, 2))
+          WHERE id IN (${idsSql})
+        `;
+      } else {
+        await prisma.$executeRaw`
+          UPDATE "MenuItem"
+          SET "priceGel" = GREATEST(0, ROUND(("priceGel" * (1 + ${op.value}::numeric / 100))::numeric, 2))
+          WHERE id IN (${idsSql})
+        `;
+      }
+    } else {
+      const field = DISCOUNT_FIELD[platform];
+      const columnSql = Prisma.raw(`"${field}"`);
+      if (op.action === "adjustPriceAmount") {
+        await prisma.$executeRaw`
+          UPDATE "MenuItem"
+          SET ${columnSql} = ROUND((COALESCE(${columnSql}, 0) + ${op.value})::numeric, 2)
+          WHERE id IN (${idsSql})
+        `;
+      } else {
+        // adjustPricePercent не применяется к скидке площадки (там само
+        // значение уже %) — фронтенд не даёт выбрать эту комбинацию, но
+        // на всякий случай возвращаем понятную ошибку, а не молча ничего
+        // не делаем.
+        return NextResponse.json(
+          { error: "adjustPricePercent is not applicable to a discount field" },
+          { status: 400 }
+        );
+      }
+    }
+  }
+
+  const updated = await prisma.menuItem.findMany({ where: { id: { in: ids } } });
 
   return NextResponse.json({
     ok: true,
