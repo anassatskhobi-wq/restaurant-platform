@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu } from "@/lib/admin/auth";
 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
   const staff = await getStaffContext();
@@ -13,6 +13,9 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
   if (!category) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (!canEditVenue(staff, category.venue)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет удалять категории." }, { status: 403 });
   }
 
   // Позиции этой категории удаляются автоматически (onDelete: Cascade в схеме).

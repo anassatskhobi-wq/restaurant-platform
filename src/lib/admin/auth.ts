@@ -42,3 +42,30 @@ export function canEditVenue(staff: StaffContext, venue: { id: string; tenantId:
   if (staff.role === "OWNER") return true;
   return staff.venueId === venue.id;
 }
+
+// Кто может редактировать САМО МЕНЮ и его настройки: цены, названия,
+// описания, скидки, состав/себестоимость, категории, модификаторы,
+// ссылки точки, столы, ИИ-команды, удаление чего-либо.
+//
+// OWNER и STAFF — могут. OPERATOR — НЕТ: его роль сознательно урезана до
+// «переключить наличие блюда/ингредиента» (см. страницу /operator).
+// Раньше это ограничение держалось только на том, что интерфейс не
+// показывал оператору кнопки — но сами API-маршруты роль не проверяли, и
+// технически подготовленный оператор мог менять цены запросом напрямую.
+// Теперь каждый маршрут-изменение вызывает эту проверку явно.
+export function canEditMenu(staff: StaffContext) {
+  return staff.role === "OWNER" || staff.role === "STAFF";
+}
+
+// true, если тело запроса на изменение блюда/ингредиента трогает ТОЛЬКО
+// поле available (вкл/выкл) и ничего больше — единственное, что дозволено
+// делать роли OPERATOR через /api/admin/items|ingredients/[id].
+export function isAvailabilityOnlyPatch(body: unknown): body is { available: boolean } {
+  if (!body || typeof body !== "object") return false;
+  const keys = Object.keys(body as Record<string, unknown>);
+  return (
+    keys.length === 1 &&
+    keys[0] === "available" &&
+    typeof (body as { available: unknown }).available === "boolean"
+  );
+}

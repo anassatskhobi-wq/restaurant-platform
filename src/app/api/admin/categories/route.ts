@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu } from "@/lib/admin/auth";
 
 export async function POST(request: Request) {
   const staff = await getStaffContext();
@@ -15,6 +15,9 @@ export async function POST(request: Request) {
   if (!venue) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (!canEditVenue(staff, venue)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет менять категории." }, { status: 403 });
   }
 
   const maxSort = await prisma.menuCategory.aggregate({

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu } from "@/lib/admin/auth";
 
 type Platform = "menu" | "qr" | "wolt" | "bolt" | "glovo";
 
@@ -27,6 +27,9 @@ type BulkAction =
 export async function POST(request: Request) {
   const staff = await getStaffContext();
   if (!staff) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет массовые изменения." }, { status: 403 });
+  }
 
   const body = await request.json().catch(() => null);
   const itemIds: unknown = body?.itemIds;

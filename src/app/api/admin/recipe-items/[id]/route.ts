@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu } from "@/lib/admin/auth";
 
 async function loadWithVenue(id: string) {
   return prisma.recipeItem.findUnique({
@@ -17,6 +17,10 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   if (!recipeItem) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (!canEditVenue(staff, recipeItem.menuItem.category.venue)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет менять состав блюд." }, { status: 403 });
   }
 
   const body = await request.json().catch(() => null);
@@ -44,6 +48,9 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
   if (!recipeItem) return NextResponse.json({ ok: true });
   if (!canEditVenue(staff, recipeItem.menuItem.category.venue)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет менять состав блюд." }, { status: 403 });
   }
 
   try {

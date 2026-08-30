@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu } from "@/lib/admin/auth";
 
 // Принимает новый порядок строк состава ОДНОГО блюда целиком (массив id
 // RecipeItem) и проставляет sortOrder = позиция в массиве. Используется
@@ -21,6 +21,9 @@ export async function POST(request: Request) {
   if (!item) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (!canEditVenue(staff, item.category.venue)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет менять порядок." }, { status: 403 });
   }
 
   await prisma.$transaction(

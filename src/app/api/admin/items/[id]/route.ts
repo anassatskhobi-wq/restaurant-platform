@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getStaffContext, canEditVenue } from "@/lib/admin/auth";
+import { getStaffContext, canEditVenue, canEditMenu, isAvailabilityOnlyPatch } from "@/lib/admin/auth";
 
 async function loadItemWithVenue(id: string) {
   return prisma.menuItem.findUnique({
@@ -21,6 +21,15 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
   const body = await request.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "invalid body" }, { status: 400 });
+
+  // OPERATOR может здесь только включать/выключать блюдо (тело строго
+  // { available: boolean }). Цены, названия, скидки, допы — только OWNER/STAFF.
+  if (!canEditMenu(staff) && !isAvailabilityOnlyPatch(body)) {
+    return NextResponse.json(
+      { error: "Ваша роль позволяет только менять наличие блюда." },
+      { status: 403 }
+    );
+  }
 
   // modifierGroups — если поле пришло в теле, полностью заменяем набор
   // групп/опций этого блюда (проще и надёжнее гранулярного CRUD для
@@ -133,6 +142,9 @@ export async function DELETE(_request: Request, { params }: { params: { id: stri
   if (!item) return NextResponse.json({ error: "not found" }, { status: 404 });
   if (!canEditVenue(staff, item.category.venue)) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+  if (!canEditMenu(staff)) {
+    return NextResponse.json({ error: "Ваша роль не позволяет удалять блюда." }, { status: 403 });
   }
 
   await prisma.menuItem.delete({ where: { id: params.id } });
