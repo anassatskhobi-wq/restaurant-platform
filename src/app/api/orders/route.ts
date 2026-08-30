@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import { rateLimit, clientIp } from "@/lib/rateLimit";
-import { sendTelegram, formatNewOrder } from "@/lib/notify";
+import { sendTelegram, formatNewOrder, orderStatusButtons } from "@/lib/notify";
 
 // STEP 2 — реальные заказы: сохраняем в Postgres через Prisma вместо
 // STEP 0/1 заглушки (раньше номер был Math.random() и никуда не писался).
@@ -250,7 +250,8 @@ export async function POST(request: Request) {
           ? (l.modifiersSnapshot as { optionName: string }[])
           : [],
       })),
-    })
+    }),
+    orderStatusButtons(created.id)
   );
 
   return NextResponse.json({
